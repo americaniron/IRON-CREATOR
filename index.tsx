@@ -29,7 +29,8 @@ import {
   Eye,
   Ghost,
   Box,
-  Activity
+  Activity,
+  Clock
 } from 'lucide-react';
 
 // --- Types ---
@@ -51,6 +52,9 @@ interface ImageGeneration {
 interface VideoGeneration {
   prompt: string;
   videoUrl: string;
+  videoAsset?: any;
+  resolution?: string;
+  aspectRatio?: string;
 }
 
 // --- Safety & Bypass Configuration ---
@@ -532,6 +536,7 @@ const UnifiedVideoWorkspace = ({
   const [results, setResults] = useState<VideoGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedImage, setSelectedImage] = useState<{ url: string, base64: string, mimeType: string } | null>(null);
+  const [extensionPrompts, setExtensionPrompts] = useState<{[key: number]: string}>({});
 
   // Configuration based on mode
   const getThemeColor = () => {
@@ -685,7 +690,8 @@ const UnifiedVideoWorkspace = ({
             throw new Error(operation.error.message || `${getTitle()} generation failed.`);
         }
 
-        const videoUri = operation.response?.generatedVideos?.[0]?.video?.uri;
+        const videoMetadata = operation.response?.generatedVideos?.[0]?.video;
+        const videoUri = videoMetadata?.uri;
         if (!videoUri) {
             // Refined error message
             throw new Error(`The content was filtered. Try describing the scene visually instead of using abstract terms.`);
@@ -694,7 +700,13 @@ const UnifiedVideoWorkspace = ({
         const secureUri = `${videoUri}&key=${process.env.API_KEY}`;
         const vidResponse = await fetch(secureUri);
         const vidBlob = await vidResponse.blob();
-        return { prompt: activePrompt || getTitle(), videoUrl: URL.createObjectURL(vidBlob) };
+        return { 
+          prompt: activePrompt || getTitle(), 
+          videoUrl: URL.createObjectURL(vidBlob),
+          videoAsset: videoMetadata,
+          resolution: resolution,
+          aspectRatio: aspectRatio
+        };
       };
 
       setProgressMsg('Rendering...');
@@ -713,6 +725,63 @@ const UnifiedVideoWorkspace = ({
       setIsGenerating(false);
       setProgressMsg('');
     }
+  };
+
+  const extendVideo = async (parentVideo: VideoGeneration, extensionPrompt: string) => {
+     if (!extensionPrompt.trim() || isGenerating) return;
+     
+     setIsGenerating(true);
+     setError(null);
+     setProgressMsg('Extending video (+5s)...');
+
+     try {
+       const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
+       let operation = await currentAi.models.generateVideos({
+           model: 'veo-3.1-generate-preview',
+           prompt: extensionPrompt,
+           video: parentVideo.videoAsset,
+           config: {
+             numberOfVideos: 1,
+             resolution: '720p', // Enforced by API for extensions
+             aspectRatio: parentVideo.aspectRatio,
+           }
+       });
+
+        while (!operation.done) {
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            operation = await currentAi.operations.getVideosOperation({ operation: operation });
+        }
+
+        if (operation.error) {
+             throw new Error(operation.error.message || `Extension failed.`);
+        }
+        
+        const videoMetadata = operation.response?.generatedVideos?.[0]?.video;
+        const videoUri = videoMetadata?.uri;
+        
+        if (!videoUri) throw new Error("Extension filtered.");
+
+        const secureUri = `${videoUri}&key=${process.env.API_KEY}`;
+        const vidResponse = await fetch(secureUri);
+        const vidBlob = await vidResponse.blob();
+        
+        const newResult = { 
+            prompt: `(Extended) ${extensionPrompt}`, 
+            videoUrl: URL.createObjectURL(vidBlob),
+            videoAsset: videoMetadata,
+            resolution: '720p',
+            aspectRatio: parentVideo.aspectRatio
+        };
+        
+        setResults(prev => [newResult, ...prev]);
+
+     } catch (e: any) {
+       console.error(e);
+       setError(e.message || 'Extension failed.');
+     } finally {
+       setIsGenerating(false);
+       setProgressMsg('');
+     }
   };
 
   return (
@@ -834,6 +903,29 @@ const UnifiedVideoWorkspace = ({
                          </a>
                       </div>
                    </div>
+                   {res.resolution === '720p' && res.videoAsset && (
+                        <div className="mb-4 p-3 bg-indigo-950/30 border border-indigo-500/20 rounded-lg">
+                           <div className="flex gap-2 items-center mb-2">
+                             <Clock size={16} className="text-indigo-400"/>
+                             <span className="text-xs font-bold text-indigo-300 uppercase tracking-wide">Extend Video</span>
+                           </div>
+                           <div className="flex gap-2">
+                             <input 
+                               type="text"
+                               value={extensionPrompts[idx] || ''}
+                               onChange={(e) => setExtensionPrompts({...extensionPrompts, [idx]: e.target.value})}
+                               placeholder="Describe what happens next..."
+                               className="flex-1 bg-black/40 border border-slate-700/50 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500/50"
+                             />
+                             <button 
+                               onClick={() => extendVideo(res, extensionPrompts[idx] || "Continue the scene naturally")}
+                               className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold uppercase rounded-lg transition-colors whitespace-nowrap"
+                             >
+                               +5s
+                             </button>
+                           </div>
+                        </div>
+                   )}
                    <PostGenEdit onEdit={(newPrompt) => generateVideo(newPrompt)} />
                  </div>
                ))}
