@@ -61,7 +61,7 @@ def get_api_key(service: str) -> Optional[str]:
     try:
         key = st.secrets.get(key_map.get(service, ""))
         return key if key else None
-    except:
+    except (KeyError, AttributeError):
         return None
 
 
@@ -112,7 +112,11 @@ def generate_sora_video(prompt: str, duration: int, resolution: str) -> Optional
 
 
 def generate_runway_video(prompt: str, duration: int, resolution: str) -> Optional[str]:
-    """Generate video using Runway Gen-3 Alpha Turbo"""
+    """Generate video using Runway Gen-3 Alpha Turbo
+    
+    Note: This is a placeholder implementation. The actual Runway API may differ.
+    Update the endpoint and request format based on official Runway API documentation.
+    """
     try:
         api_key = get_api_key("runway")
         if not api_key:
@@ -120,14 +124,14 @@ def generate_runway_video(prompt: str, duration: int, resolution: str) -> Option
             return None
         
         # Note: This is a placeholder implementation
-        # Actual Runway API may differ
+        # Actual Runway API may differ - verify with official documentation
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
         with st.spinner("Creating video with Runway..."):
-            # Create task
+            # Create task - endpoint may need to be updated
             response = requests.post(
                 "https://api.runwayml.com/v1/text-to-video",
                 headers=headers,
@@ -289,7 +293,11 @@ def generate_pika_video(prompt: str, duration: int, resolution: str) -> Optional
 
 
 def generate_vidu_video(prompt: str, duration: int, resolution: str) -> Optional[str]:
-    """Generate video using Vidu AI"""
+    """Generate video using Vidu AI
+    
+    Note: This is a placeholder implementation. The actual Vidu AI API may differ.
+    Update the endpoint and request format based on official Vidu/Pollo.ai API documentation.
+    """
     try:
         api_key = get_api_key("vidu")
         if not api_key:
@@ -302,7 +310,7 @@ def generate_vidu_video(prompt: str, duration: int, resolution: str) -> Optional
         }
         
         with st.spinner("Creating video with Vidu AI..."):
-            # Create generation
+            # Create generation - endpoint may need to be updated
             response = requests.post(
                 "https://pollo.ai/api/platform/generation/vidu/vidu-v2-0",
                 headers=headers,
