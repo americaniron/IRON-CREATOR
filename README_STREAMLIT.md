@@ -5,6 +5,15 @@ A powerful Streamlit web application for generating AI videos using state-of-the
 ![AI Video Generator](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.9+-blue?style=for-the-badge&logo=python&logoColor=white)
 
+## 📚 Documentation
+
+This project includes comprehensive documentation to help you get started:
+
+- 📖 **[Quick Start Guide](QUICKSTART.md)** - Get your first video in 5 minutes
+- 🔐 **[API Configuration Guide](API_SETUP.md)** - Detailed setup for all API providers
+- ✅ **[Deployment Checklist](DEPLOYMENT_CHECKLIST.md)** - Complete deployment verification
+- 🎨 **[Example Prompts](EXAMPLE_PROMPTS.md)** - Curated prompts and writing tips
+
 ## ✨ Features
 
 - **14 AI Video Models**: Choose from multiple cutting-edge AI video generation models

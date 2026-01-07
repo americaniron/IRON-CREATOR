@@ -502,6 +502,13 @@ with st.sidebar:
         "This app generates AI videos using various state-of-the-art models. "
         "Select a model, enter your prompt, and generate stunning videos!"
     )
+    
+    st.markdown("### 📚 Documentation")
+    st.markdown(
+        "- [Quick Start](https://github.com/americaniron/IRON-CREATOR/blob/main/QUICKSTART.md)\n"
+        "- [API Setup](https://github.com/americaniron/IRON-CREATOR/blob/main/API_SETUP.md)\n"
+        "- [Example Prompts](https://github.com/americaniron/IRON-CREATOR/blob/main/EXAMPLE_PROMPTS.md)"
+    )
 
 # Main interface
 col1, col2 = st.columns([2, 1])
