@@ -39,11 +39,11 @@ MODELS = [
 FLUX_MODELS = {
     "Flux.1-schnell + SVD": "black-forest-labs/flux-schnell",
     "Flux.1-dev + SVD": "black-forest-labs/flux-dev",
-    "Flux.1-pro + SVD": "black-forest-labs/flux-1.1-pro",
+    "Flux.1-pro + SVD": "black-forest-labs/flux-pro",
     "Flux.1.1-pro + SVD": "black-forest-labs/flux-1.1-pro",
-    "Flux.2 + SVD": "black-forest-labs/flux-1.1-pro",
-    "Flux.2-max + SVD": "black-forest-labs/flux-1.1-pro",
-    "Flux Kontext + SVD": "black-forest-labs/flux-dev"
+    "Flux.2 + SVD": "black-forest-labs/flux-1.1-pro",  # Using 1.1-pro as fallback for Flux.2
+    "Flux.2-max + SVD": "black-forest-labs/flux-1.1-pro",  # Using 1.1-pro as fallback for Flux.2-max
+    "Flux Kontext + SVD": "black-forest-labs/flux-dev"  # Using dev as fallback for Kontext
 }
 
 SVD_MODEL = "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438"
@@ -62,7 +62,7 @@ def get_api_key(service: str) -> Optional[str]:
     
     try:
         return st.secrets.get(key_map.get(service, service))
-    except:
+    except Exception:
         return os.environ.get(key_map.get(service, service))
 
 
@@ -408,19 +408,20 @@ def generate_pony_svd_video(prompt: str, duration: int, resolution: str) -> Opti
         # Set API token for replicate
         os.environ["REPLICATE_API_TOKEN"] = api_key
         
-        with st.spinner("Generating video with Stable Video Diffusion..."):
-            output = replicate.run(
-                SVD_MODEL,
-                input={
-                    "input_image": None,  # Will use default/random initialization
-                    "frames_per_second": 6,
-                    "motion_bucket_id": 127
-                }
-            )
+        # First generate an image using Flux as a starting point
+        with st.spinner("Generating initial image..."):
+            image_url = generate_flux_image("Flux.1-schnell + SVD", prompt)
             
-            if output:
-                return output if isinstance(output, str) else output[0] if isinstance(output, list) else None
-            return None
+            if not image_url:
+                st.error("Failed to generate initial image for SVD")
+                return None
+        
+        # Display the generated image
+        st.image(image_url, caption="Generated Image", use_container_width=True)
+        
+        # Convert to video using SVD
+        video_url = generate_svd_video(image_url, duration)
+        return video_url
     except Exception as e:
         st.error(f"Error generating Pony SVD video: {str(e)}")
         return None
