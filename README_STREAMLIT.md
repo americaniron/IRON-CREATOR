@@ -36,6 +36,10 @@ A powerful Streamlit web application for generating AI videos using state-of-the
 
 ## 🚀 Quick Start
 
+**New to the app?** Check out our guides:
+- 📖 [Quick Start Guide](QUICKSTART.md) - Get your first video in 5 minutes
+- 🔐 [API Configuration Guide](API_SETUP.md) - Detailed setup for all providers
+
 ### Prerequisites
 
 - Python 3.9 or higher
@@ -230,6 +234,10 @@ Contributions are welcome! Here's how you can help:
 This project is open source and available under the MIT License.
 
 ## 🐛 Troubleshooting
+
+**Need help?** See our comprehensive guides:
+- 📖 [Quick Start Guide](QUICKSTART.md) - Common setup issues
+- 🔐 [API Configuration Guide](API_SETUP.md) - API key problems
 
 ### Common Issues
 
