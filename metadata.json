@@ -1,5 +1,7 @@
 {
   "description": "Gemini AI Studio - Chat, Vision, Image, and Voice. AND MUCH MORE",
-  "requestFramePermissions": [],
+  "requestFramePermissions": [
+    "microphone"
+  ],
   "name": "XMOD GenAI Studio"
 }
