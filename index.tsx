@@ -130,6 +130,12 @@ const isKeyError = (e: any) => {
     return msg.includes('requested entity was not found') || msg.includes('api key not valid');
 };
 
+const isSafetyError = (e: any) => {
+    if (!e) return false;
+    const msg = (e.message || '').toString().toLowerCase();
+    return msg.includes('safety') || msg.includes('filtered') || msg.includes('blocked');
+}
+
 // --- Audio Helpers ---
 function encode(bytes: Uint8Array) {
   let binary = '';
@@ -197,6 +203,13 @@ const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?:
     }
   };
 
+  const getErrorMessage = (err: any) => {
+    if (isQuotaError(err)) return "⚠️ Quota exceeded. Please check your API key billing status.";
+    if (isSafetyError(err)) return "🚫 Response was blocked by safety filters. Please modify your prompt.";
+    if (isKeyError(err)) return "🔑 API Key error. Please select a valid key.";
+    return "An unexpected error occurred. Please check the console for details.";
+  }
+
   const sendMessage = async () => {
     const currentInput = input;
     const currentImage = selectedImage;
@@ -252,7 +265,7 @@ const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?:
 
     } catch (err: any) {
       console.error(err);
-      const errorText = isQuotaError(err) ? "⚠️ Quota exceeded. Please check your API key billing status." : "A server-side error occurred. The response may have been blocked due to safety filters or other issues.";
+      const errorText = getErrorMessage(err);
       setMessages(prev => {
         const newArr = [...prev];
         const lastMsg = newArr[newArr.length - 1];
@@ -275,7 +288,7 @@ const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?:
           <div className="h-full flex flex-col items-center justify-center text-[rgb(var(--color-text-tertiary))]">
              {isProMode ? <BrainCircuit size={64} className="mb-4" /> : <MessageSquare size={64} className="mb-4" />}
             <p className="text-xl font-medium text-[rgb(var(--color-text-secondary))]">{isProMode ? "Pro Chat" : "Omni Chat"}</p>
-            <p className="text-sm mt-2">{isProMode ? "For complex reasoning, coding, and logic tasks." : "Fast, multi-modal conversations."}</p>
+            <p className="text-sm mt-2 text-center max-w-sm">{isProMode ? "Engage with Gemini's most powerful model for complex reasoning, coding, and logical challenges." : "Start a fast, multi-modal conversation. You can include images with your prompts."}</p>
           </div>
         )}
         {messages.map((msg, idx) => (
@@ -293,22 +306,29 @@ const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?:
         <div ref={messagesEndRef} />
       </div>
       <div className="p-4 bg-[rgb(var(--color-background))] border-t border-[rgb(var(--color-border))]">
-        {selectedImage && (
-            <div className="mb-3 relative w-24 h-24 rounded-lg overflow-hidden border-2 border-[rgb(var(--color-accent))]">
+        <div className="flex items-center gap-2">
+            {messages.length > 0 && 
+              <button onClick={() => setMessages([])} className="p-2 text-[rgb(var(--color-text-secondary))] hover:text-[rgb(var(--color-accent))] transition-colors rounded-lg">
+                <Trash2 size={20} />
+              </button>
+            }
+            <div className="flex flex-1 items-center gap-2 bg-[rgb(var(--color-panel))] p-2 rounded-xl border border-[rgb(var(--color-border))] focus-within:border-[rgb(var(--color-accent))] transition-colors">
+              <label className="p-2 text-[rgb(var(--color-text-secondary))] hover:text-[rgb(var(--color-accent))] cursor-pointer rounded-lg">
+                <input type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
+                <ImageIcon size={20} />
+              </label>
+              <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isLoading && sendMessage()} placeholder="Ask anything..." className="flex-1 bg-transparent text-white focus:outline-none placeholder:text-[rgb(var(--color-text-tertiary))]" />
+              <button onClick={sendMessage} disabled={isLoading || (!input.trim() && !selectedImage)} className="p-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
+                {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
+              </button>
+            </div>
+        </div>
+         {selectedImage && (
+            <div className="mt-3 relative w-24 h-24 rounded-lg overflow-hidden border-2 border-[rgb(var(--color-accent))]">
                 <img src={selectedImage.url} className="w-full h-full object-cover" />
                 <button onClick={() => setSelectedImage(null)} className="absolute top-1 right-1 p-1 bg-black/60 rounded-full hover:bg-black/80 transition-colors"><X size={14}/></button>
             </div>
         )}
-        <div className="flex items-center gap-2 bg-[rgb(var(--color-panel))] p-2 rounded-xl border border-[rgb(var(--color-border))] focus-within:border-[rgb(var(--color-accent))] transition-colors">
-          <label className="p-2 text-[rgb(var(--color-text-secondary))] hover:text-[rgb(var(--color-accent))] cursor-pointer rounded-lg">
-            <input type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
-            <ImageIcon size={20} />
-          </label>
-          <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isLoading && sendMessage()} placeholder="Ask anything..." className="flex-1 bg-transparent text-white focus:outline-none placeholder:text-[rgb(var(--color-text-tertiary))]" />
-          <button onClick={sendMessage} disabled={isLoading || (!input.trim() && !selectedImage)} className="p-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
-            {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
-          </button>
-        </div>
       </div>
     </div>
   );
@@ -434,7 +454,15 @@ const ImageWorkspace = ({ onCreateVideo, stylePreset }: { onCreateVideo: (image:
                 </div>
               ))}
             </div>
-          ) : <div className="text-center text-[rgb(var(--color-text-tertiary))]"><ImageIcon size={64} /><p className="mt-2 text-sm">Generated images will appear here</p></div>}
+          ) : <div className="text-center text-[rgb(var(--color-text-tertiary))]">
+                <div className="text-center p-8 rounded-lg bg-[rgb(var(--color-panel))] border border-dashed border-[rgb(var(--color-border))]">
+                    <Wand2 size={48} className="mx-auto text-blue-400" />
+                    <p className="mt-4 font-medium text-lg">Image Generation Studio</p>
+                    <p className="text-sm mt-2">Bring your ideas to life. Try a prompt like:</p>
+                    <p className="text-xs mt-2 p-2 bg-[rgb(var(--color-panel-light))] rounded font-mono">"photo of a raccoon astronaut in a spaceship, 4k"</p>
+                </div>
+              </div>
+          }
         </div>
       </div>
     </div>
@@ -560,6 +588,7 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed }: { initialData?: 
               contents: `Refine this prompt for a video generator: "${prompt}"`,
               config: { systemInstruction: PROMPT_HARDENER_INSTRUCTION, safetySettings: getSafetySettings() }
           });
+          // FIX: response.text is a property, not a function.
           if (response.text) setPrompt(response.text.trim());
       } catch (e) { console.error(e); } finally { setIsRefining(false); }
   };
@@ -915,13 +944,10 @@ const TTSWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
     };
     
     return (
-        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
-            <div className="w-full max-w-2xl space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
-                <div className="text-center">
-                    <Voicemail size={40} className="text-sky-400 mx-auto" />
-                    <h2 className="text-2xl font-bold mt-2">Speech Synthesis</h2>
-                </div>
-                <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full h-40 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-4 focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="Enter text to generate speech..."/>
+        <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+            <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-6 bg-[rgb(var(--color-panel))]">
+                <h2 className="text-lg font-bold flex items-center gap-3"><Voicemail size={22} className="text-sky-400"/> Speech Synthesis</h2>
+                <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full flex-1 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-4 focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="Enter text to generate speech..."/>
                 <select value={selectedVoice} onChange={e => setSelectedVoice(e.target.value)} className="w-full p-3 bg-[rgb(var(--color-panel-light))] rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors">
                     <option value="Kore">Kore (Female)</option>
                     <option value="Puck">Puck (Male)</option>
@@ -931,10 +957,17 @@ const TTSWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
                 <button onClick={generateSpeech} disabled={isLoading || !text.trim()} className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-bold transition-colors disabled:opacity-50">
                     {isLoading ? <Loader2 className="animate-spin mx-auto"/> : "Generate Speech"}
                 </button>
-                {audioData && (
-                    <div className="p-4 bg-[rgb(var(--color-panel-light))] rounded-lg flex items-center gap-4 border border-[rgb(var(--color-border))]">
+            </div>
+            <div className="flex-1 p-8 bg-[rgb(var(--color-background))] flex items-center justify-center">
+                 {audioData ? (
+                    <div className="p-4 bg-[rgb(var(--color-panel))] rounded-lg flex items-center gap-4 border border-[rgb(var(--color-border))]">
                         <button onClick={togglePlayback} className="p-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] rounded-full transition-colors">{isPlaying ? <Pause/> : <Play/>}</button>
                         <p className="text-sm text-[rgb(var(--color-text-secondary))]">Speech generated. Press play to listen.</p>
+                    </div>
+                 ) : (
+                    <div className="text-center text-[rgb(var(--color-text-tertiary))]">
+                        <Voicemail size={64}/>
+                        <p className="mt-2 font-medium">Generated audio will be playable here</p>
                     </div>
                 )}
             </div>
@@ -986,18 +1019,21 @@ const TranscribeWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
     };
 
     return (
-        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
-            <div className="w-full max-w-2xl text-center space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
-                <Speech size={40} className="text-teal-400 mx-auto" />
-                <h2 className="text-2xl font-bold">Audio Transcription</h2>
-                <button onClick={isRecording ? stopRecording : startRecording} className={`px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-teal-500'}`}>
-                    {isRecording ? "Stop Recording" : "Start Recording"}
+       <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+            <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-6 bg-[rgb(var(--color-panel))]">
+                 <h2 className="text-lg font-bold flex items-center gap-3"><Speech size={22} className="text-teal-400"/> Audio Transcription</h2>
+                 <p className="text-sm text-[rgb(var(--color-text-secondary))]">Record audio from your microphone and get a real-time transcription.</p>
+                 <div className="flex-1" />
+                 <button onClick={isRecording ? stopRecording : startRecording} className={`py-3 rounded-lg font-bold text-lg transition-all duration-300 ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-teal-500'}`}>
+                    {isLoading ? "Transcribing..." : isRecording ? "Stop Recording" : "Start Recording"}
                 </button>
-                {(isLoading || transcript) && <div className="p-6 bg-[rgb(var(--color-panel-light))] rounded-lg text-left whitespace-pre-wrap min-h-[100px] border border-[rgb(var(--color-border))]">
-                    {isLoading ? <Loader2 className="mx-auto animate-spin my-4"/> : transcript}
-                </div>}
             </div>
-        </div>
+             <div className="flex-1 p-8 bg-[rgb(var(--color-background))] flex items-center justify-center">
+                <div className="w-full max-w-2xl h-full p-6 bg-[rgb(var(--color-panel))] rounded-lg text-left whitespace-pre-wrap overflow-y-auto border border-[rgb(var(--color-border))]">
+                    {isLoading ? <Loader2 className="mx-auto animate-spin my-4"/> : transcript || <span className="text-[rgb(var(--color-text-tertiary))]">Transcription will appear here...</span>}
+                </div>
+            </div>
+       </div>
     );
 };
 
@@ -1025,16 +1061,19 @@ const VideoAnalysisWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
     };
     
     return (
-        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
-            <div className="w-full max-w-2xl text-center space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
-                <Clapperboard size={40} className="text-rose-400 mx-auto" />
-                <h2 className="text-2xl font-bold">Video Analysis</h2>
+       <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+            <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-6 bg-[rgb(var(--color-panel))]">
+                <h2 className="text-lg font-bold flex items-center gap-3"><Clapperboard size={22} className="text-rose-400"/> Video Analysis</h2>
                 <input type="file" accept="video/*" onChange={e => setVideoFile(e.target.files?.[0] || null)} className="w-full text-sm text-[rgb(var(--color-text-secondary))] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[rgb(var(--color-panel-light))] file:text-[rgb(var(--color-text-primary))] hover:file:bg-[rgb(var(--color-border))] file:cursor-pointer"/>
-                <textarea value={prompt} onChange={e => setPrompt(e.target.value)} className="w-full h-24 bg-[rgb(var(--color-panel-light))] p-4 rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0" placeholder="What should I look for in the video?"/>
+                <textarea value={prompt} onChange={e => setPrompt(e.target.value)} className="w-full flex-1 bg-[rgb(var(--color-panel-light))] p-4 rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0" placeholder="What should I look for in the video?"/>
                 <button onClick={handleAnalysis} disabled={isLoading || !videoFile || !prompt.trim()} className="w-full py-3 bg-rose-600 hover:bg-rose-700 font-bold rounded-lg transition-colors disabled:opacity-50">
                     {isLoading ? <Loader2 className="animate-spin mx-auto"/> : "Analyze Video"}
                 </button>
-                {analysis && <div className="p-6 bg-[rgb(var(--color-panel-light))] rounded-lg text-left whitespace-pre-wrap border border-[rgb(var(--color-border))]">{analysis}</div>}
+            </div>
+             <div className="flex-1 p-8 bg-[rgb(var(--color-background))] flex items-center justify-center">
+                 <div className="w-full max-w-2xl h-full p-6 bg-[rgb(var(--color-panel))] rounded-lg text-left whitespace-pre-wrap overflow-y-auto border border-[rgb(var(--color-border))]">
+                    {analysis || <span className="text-[rgb(var(--color-text-tertiary))]">Analysis will appear here...</span>}
+                </div>
             </div>
         </div>
     );
@@ -1276,6 +1315,11 @@ const App = () => {
         </div>
 
         <div className="p-3 space-y-1.5 border-t border-[rgb(var(--color-border))] shrink-0">
+             <SidebarTooltip label="GitHub Repo" disabled={isSidebarExpanded}>
+               <a href="https://github.com/google/generative-ai-docs/tree/main/site/en/tutorials/web_quickstart" target="_blank" rel="noopener noreferrer" className="w-full">
+                <SidebarButton label="GitHub" icon={<Github size={20} />} isExpanded={isSidebarExpanded} />
+               </a>
+            </SidebarTooltip>
             <SidebarTooltip label="API Key Settings" disabled={isSidebarExpanded}>
                 <SidebarButton label="API Key" icon={<Key size={20} />} onClick={() => (window as any).aistudio?.openSelectKey?.()} isExpanded={isSidebarExpanded} />
             </SidebarTooltip>
@@ -1308,5 +1352,58 @@ const App = () => {
   );
 };
 
+const ApiKeyWrapper = () => {
+    const [hasApiKey, setHasApiKey] = useState(false);
+
+    useEffect(() => {
+        // Simple check if the API_KEY environment variable is set.
+        // This relies on the build environment correctly injecting the variable.
+        if (process.env.API_KEY) {
+            setHasApiKey(true);
+        }
+    }, []);
+
+    const handleSetKey = async () => {
+        try {
+            await (window as any).aistudio.openSelectKey();
+            // Assume the user has selected a key and the environment is updated.
+            // A page reload might be the most robust way to ensure the new key is loaded.
+            window.location.reload();
+        } catch (e) {
+            console.error("Failed to open API key selection:", e);
+        }
+    };
+    
+    if (hasApiKey) {
+        return <App />;
+    }
+
+    return (
+        <div className="h-screen w-screen flex items-center justify-center bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))] font-sans">
+            <div className="text-center bg-[rgb(var(--color-panel))] p-12 rounded-2xl shadow-2xl border border-[rgb(var(--color-border))]">
+                 <div className="w-16 h-16 bg-blue-600 rounded-lg flex items-center justify-center mx-auto mb-6">
+                    <Sparkles className="text-white" size={32} />
+                </div>
+                <h1 className="text-3xl font-bold">Welcome to XMOD GenAI Studio</h1>
+                <p className="mt-4 max-w-md text-[rgb(var(--color-text-secondary))]">
+                    To get started, please connect your Google AI Studio API key. 
+                    This key is stored locally and is required to use the models.
+                </p>
+                <button 
+                    onClick={handleSetKey}
+                    className="mt-8 px-6 py-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-xl font-bold transition-colors active:scale-95 flex items-center gap-2 mx-auto"
+                >
+                    <Key size={18} />
+                    Connect API Key
+                </button>
+                 <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="block text-xs mt-4 text-[rgb(var(--color-text-tertiary))] hover:text-[rgb(var(--color-accent))] transition-colors">
+                    Don't have a key? Get one from Google AI Studio
+                </a>
+            </div>
+        </div>
+    );
+};
+
+
 const root = createRoot(document.getElementById('root')!);
-root.render(<App />);
+root.render(<ApiKeyWrapper />);
