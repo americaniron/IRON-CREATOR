@@ -1,7 +1,8 @@
 
+
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai";
+import { GoogleGenAI, Type, Modality, LiveServerMessage, Blob as GenAIBlob } from "@google/genai";
 import { 
   MessageSquare, 
   Image as ImageIcon, 
@@ -44,11 +45,20 @@ import {
   Settings2,
   Plus,
   History,
-  Timer
+  Timer,
+  BrainCircuit,
+  Voicemail,
+  Speech,
+  Clapperboard,
+  Check,
+  User,
+  Bot,
+  Dice5
 } from 'lucide-react';
 
 // --- Types ---
-type Tab = 'chat' | 'image' | 'pony' | 'video' | 'wan' | 'wan_pro' | 'xmode_real' | 'xmode_anime' | 'xmode_3d' | 'voice';
+type Tab = 'chat' | 'pro_chat' | 'image' | 'image_edit' | 'pony' | 'video' | 'tts' | 'transcribe' | 'video_analysis' | 'voice';
+type VideoModel = 'veo' | 'zImage' | 'longcat' | 'flow';
 
 interface Message {
   role: 'user' | 'model';
@@ -120,34 +130,60 @@ const isKeyError = (e: any) => {
     return msg.includes('requested entity was not found') || msg.includes('api key not valid');
 };
 
+// --- Audio Helpers ---
+function encode(bytes: Uint8Array) {
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function decode(base64: string) {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function decodeAudioData(
+  data: Uint8Array,
+  ctx: AudioContext,
+  sampleRate: number,
+  numChannels: number,
+): Promise<AudioBuffer> {
+  const dataInt16 = new Int16Array(data.buffer);
+  const frameCount = dataInt16.length / numChannels;
+  const buffer = ctx.createBuffer(numChannels, frameCount, sampleRate);
+
+  for (let channel = 0; channel < numChannels; channel++) {
+    const channelData = buffer.getChannelData(channel);
+    for (let i = 0; i < frameCount; i++) {
+      channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
+    }
+  }
+  return buffer;
+}
+
+
 // --- Components ---
 
-const ChatWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?: boolean }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedImage, setSelectedImage] = useState<{ url: string, base64: string } | null>(null);
-  const chatSessionRef = useRef<any>(null);
+  const [selectedImage, setSelectedImage] = useState<{ url: string, base64: string, mimeType: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    chatSessionRef.current = ai.chats.create({
-      model: 'gemini-3-flash-preview', 
-      config: {
-        systemInstruction: UNRESTRICTED_SYSTEM_INSTRUCTION,
-        safetySettings: getSafetySettings(),
-        temperature: 1.0,
-      }
-    });
-  }, [ai]);
-
+  
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
 
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
+  useEffect(scrollToBottom, [messages]);
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -155,90 +191,121 @@ const ChatWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
       const base64 = await blobToBase64(file);
       setSelectedImage({
         url: URL.createObjectURL(file),
-        base64
+        base64,
+        mimeType: file.type
       });
     }
   };
 
   const sendMessage = async () => {
-    if ((!input.trim() && !selectedImage) || isLoading) return;
-    const userMsg: Message = { role: 'user', text: input, image: selectedImage?.url };
-    setMessages(prev => [...prev, userMsg]);
-    setIsLoading(true);
     const currentInput = input;
     const currentImage = selectedImage;
+    if (!currentInput.trim() && !currentImage) return;
+
+    const userMsg: Message = { role: 'user', text: currentInput, image: currentImage?.url };
+    setMessages(prev => [...prev, userMsg]);
     setInput('');
     setSelectedImage(null);
+    setIsLoading(true);
+    setMessages(prev => [...prev, { role: 'model', text: '', isStreaming: true }]);
 
     try {
-      let streamResult;
+      const parts: any[] = [];
       if (currentImage) {
-        streamResult = await chatSessionRef.current.sendMessageStream({
-          message: { parts: [{ inlineData: { mimeType: 'image/jpeg', data: currentImage.base64 } }, { text: currentInput || "Analyze this image." }] }
-        });
-      } else {
-        streamResult = await chatSessionRef.current.sendMessageStream({ message: currentInput });
+        parts.push({ inlineData: { mimeType: currentImage.mimeType, data: currentImage.base64 } });
       }
+      parts.push({ text: currentInput });
+      
+      const config: any = isProMode ? { thinkingConfig: { thinkingBudget: 32768 } } : {};
+      const model = isProMode ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
 
-      setMessages(prev => [...prev, { role: 'model', text: '', isStreaming: true }]);
+      const stream = await ai.models.generateContentStream({
+        model,
+        contents: { parts },
+        config
+      });
+
       let fullText = '';
-      for await (const chunk of streamResult) {
+      for await (const chunk of stream) {
         const text = chunk.text;
         if (text) {
           fullText += text;
           setMessages(prev => {
             const newArr = [...prev];
-            newArr[newArr.length - 1] = { role: 'model', text: fullText, isStreaming: true };
+            const lastMsg = newArr[newArr.length - 1];
+            if (lastMsg.role === 'model') {
+              newArr[newArr.length - 1] = { ...lastMsg, text: fullText, isStreaming: true };
+            }
             return newArr;
           });
         }
       }
-      setMessages(prev => {
+
+       setMessages(prev => {
         const newArr = [...prev];
-        newArr[newArr.length - 1] = { role: 'model', text: fullText, isStreaming: false };
+        const lastMsg = newArr[newArr.length - 1];
+        if (lastMsg.role === 'model') {
+          newArr[newArr.length - 1] = { ...lastMsg, text: fullText, isStreaming: false };
+        }
         return newArr;
       });
+
     } catch (err: any) {
       console.error(err);
-      if (isKeyError(err)) {
-          setMessages(prev => [...prev, { role: 'model', text: "⚠️ API Key issue detected. Please re-select your key in the sidebar.", isStreaming: false }]);
-          (window as any).aistudio?.openSelectKey?.();
-      } else {
-          setMessages(prev => [...prev, { role: 'model', text: isQuotaError(err) ? "⚠️ Quota exceeded." : "Response blocked or filtered.", isStreaming: false }]);
-      }
+      const errorText = isQuotaError(err) ? "⚠️ Quota exceeded. Please check your API key billing status." : "A server-side error occurred. The response may have been blocked due to safety filters or other issues.";
+      setMessages(prev => {
+        const newArr = [...prev];
+        const lastMsg = newArr[newArr.length - 1];
+        if (lastMsg.role === 'model') {
+           newArr[newArr.length - 1] = { ...lastMsg, text: errorText, isStreaming: false };
+        } else {
+           newArr.push({ role: 'model', text: errorText });
+        }
+        return newArr;
+      });
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-900 text-slate-100">
-      <div className="flex-1 overflow-y-auto p-4 space-y-6 custom-scrollbar">
+    <div className="flex flex-col h-full bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+      <div className="flex-1 overflow-y-auto p-6 space-y-8">
         {messages.length === 0 && (
-          <div className="h-full flex flex-col items-center justify-center text-slate-500 opacity-50">
-            <MessageSquare size={64} className="mb-4" />
-            <p className="text-xl font-medium">Unrestricted Omni Chat</p>
+          <div className="h-full flex flex-col items-center justify-center text-[rgb(var(--color-text-tertiary))]">
+             {isProMode ? <BrainCircuit size={64} className="mb-4" /> : <MessageSquare size={64} className="mb-4" />}
+            <p className="text-xl font-medium text-[rgb(var(--color-text-secondary))]">{isProMode ? "Pro Chat" : "Omni Chat"}</p>
+            <p className="text-sm mt-2">{isProMode ? "For complex reasoning, coding, and logic tasks." : "Fast, multi-modal conversations."}</p>
           </div>
         )}
         {messages.map((msg, idx) => (
-          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] rounded-2xl p-4 ${msg.role === 'user' ? 'bg-indigo-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-200 rounded-bl-none'}`}>
+          <div key={idx} className={`flex items-start gap-4`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${msg.role === 'user' ? 'bg-[rgb(var(--color-accent))]' : 'bg-[rgb(var(--color-panel-light))]'}`}>
+                {msg.role === 'user' ? <User size={16} /> : <Bot size={16} />}
+            </div>
+            <div className={`max-w-[85%] rounded-lg p-4 bg-[rgb(var(--color-panel))]`}>
               {msg.image && <img src={msg.image} className="mb-3 rounded-lg max-h-60 object-contain bg-black/20" />}
-              <div className="whitespace-pre-wrap leading-relaxed">{msg.text}</div>
-              {msg.isStreaming && <span className="inline-block w-2 h-4 ml-1 bg-indigo-400 animate-pulse"/>}
+              <div className="whitespace-pre-wrap leading-relaxed prose prose-invert prose-p:text-[rgb(var(--color-text-primary))]">{msg.text}</div>
+              {msg.isStreaming && <span className="inline-block w-2.5 h-2.5 ml-1 bg-[rgb(var(--color-accent))] rounded-full animate-pulse"/>}
             </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
       </div>
-      <div className="p-4 bg-slate-900 border-t border-slate-800">
-        <div className="flex gap-2">
-          <label className="p-3 text-slate-400 hover:text-indigo-400 cursor-pointer bg-slate-800 rounded-xl">
+      <div className="p-4 bg-[rgb(var(--color-background))] border-t border-[rgb(var(--color-border))]">
+        {selectedImage && (
+            <div className="mb-3 relative w-24 h-24 rounded-lg overflow-hidden border-2 border-[rgb(var(--color-accent))]">
+                <img src={selectedImage.url} className="w-full h-full object-cover" />
+                <button onClick={() => setSelectedImage(null)} className="absolute top-1 right-1 p-1 bg-black/60 rounded-full hover:bg-black/80 transition-colors"><X size={14}/></button>
+            </div>
+        )}
+        <div className="flex items-center gap-2 bg-[rgb(var(--color-panel))] p-2 rounded-xl border border-[rgb(var(--color-border))] focus-within:border-[rgb(var(--color-accent))] transition-colors">
+          <label className="p-2 text-[rgb(var(--color-text-secondary))] hover:text-[rgb(var(--color-accent))] cursor-pointer rounded-lg">
             <input type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
             <ImageIcon size={20} />
           </label>
-          <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && sendMessage()} placeholder="Type a message..." className="flex-1 bg-slate-800 text-white rounded-xl px-4 py-3 focus:outline-none" />
-          <button onClick={sendMessage} disabled={isLoading} className="p-3 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition-all active:scale-95">
+          <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && !isLoading && sendMessage()} placeholder="Ask anything..." className="flex-1 bg-transparent text-white focus:outline-none placeholder:text-[rgb(var(--color-text-tertiary))]" />
+          <button onClick={sendMessage} disabled={isLoading || (!input.trim() && !selectedImage)} className="p-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-lg transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed">
             {isLoading ? <Loader2 size={20} className="animate-spin" /> : <Send size={20} />}
           </button>
         </div>
@@ -250,11 +317,11 @@ const ChatWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
 const PostGenEdit = ({ onEdit }: { onEdit: (prompt: string) => void }) => {
   const [editPrompt, setEditPrompt] = useState('');
   return (
-    <div className="mt-4 p-3 bg-slate-800/50 rounded-lg border border-slate-700/50 backdrop-blur-sm">
+    <div className="mt-3 p-2 bg-black/20 rounded-lg border border-[rgb(var(--color-border))]">
       <div className="flex gap-2 items-center">
-        <Edit3 size={16} className="text-slate-400"/>
-        <input type="text" value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} placeholder="Refine result..." className="flex-1 bg-transparent border-none text-sm text-white focus:ring-0" onKeyDown={(e) => e.key === 'Enter' && onEdit(editPrompt)} />
-        <button onClick={() => onEdit(editPrompt)} disabled={!editPrompt.trim()} className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs rounded-md transition-all active:scale-95 disabled:opacity-30">Edit</button>
+        <Edit3 size={16} className="text-[rgb(var(--color-text-secondary))] ml-1 shrink-0"/>
+        <input type="text" value={editPrompt} onChange={(e) => setEditPrompt(e.target.value)} placeholder="Make an edit..." className="flex-1 bg-transparent border-none text-sm text-white focus:ring-0 placeholder:text-[rgb(var(--color-text-tertiary))]" onKeyDown={(e) => e.key === 'Enter' && onEdit(editPrompt)} />
+        <button onClick={() => onEdit(editPrompt)} disabled={!editPrompt.trim()} className="px-3 py-1 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white text-xs rounded-md transition-all active:scale-95 disabled:opacity-30">Apply</button>
       </div>
     </div>
   );
@@ -262,8 +329,9 @@ const PostGenEdit = ({ onEdit }: { onEdit: (prompt: string) => void }) => {
 
 const ImageWorkspace = ({ onCreateVideo, stylePreset }: { onCreateVideo: (image: string, prompt: string) => void, stylePreset?: string }) => {
   const [prompt, setPrompt] = useState('');
+  const [negativePrompt, setNegativePrompt] = useState('');
+  const [seed, setSeed] = useState<number | string>('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [imageCount, setImageCount] = useState(1);
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<ImageGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -277,115 +345,201 @@ const ImageWorkspace = ({ onCreateVideo, stylePreset }: { onCreateVideo: (image:
 
     try {
       const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY });
-      let finalPrompt = activePrompt;
+      let finalPrompt = `${activePrompt}, 8k resolution, highly detailed, cinematic`;
+      if (negativePrompt) finalPrompt += ` | ${negativePrompt}`;
       if (stylePreset === 'pony') {
-        finalPrompt = `${activePrompt}, score_9, score_8_up, score_7_up, source_anime, rating_explicit, high quality, masterpiece`;
-      } else {
-        finalPrompt = `${activePrompt} . 8k resolution, highly detailed, realistic, sharp focus, cinematic`;
+        finalPrompt = `${activePrompt}, score_9, score_8_up, masterpiece ${negativePrompt ? ` | ${negativePrompt}` : ''}`;
       }
 
-      const requests = Array.from({ length: overridePrompt ? 1 : imageCount }).map(() => {
-         const parts: any[] = [{ text: finalPrompt }];
-         if (sourceImage) {
-            const [, data] = sourceImage.split(',');
-            parts.unshift({ inlineData: { mimeType: 'image/png', data } });
-         }
-         return currentAi.models.generateContent({
-          model: 'gemini-2.5-flash-image',
-          contents: { parts },
-          config: { 
-            imageConfig: { aspectRatio }, 
-            safetySettings: getSafetySettings(), 
-            systemInstruction: stylePreset === 'pony' ? PONY_SYSTEM_INSTRUCTION : UNRESTRICTED_SYSTEM_INSTRUCTION 
-          }
-        });
-      });
-
-      const responses = await Promise.all(requests);
-      const newResults: ImageGeneration[] = [];
-      responses.forEach(response => {
-        for (const part of response.candidates?.[0]?.content?.parts || []) {
-          if (part.inlineData) {
-            newResults.push({ prompt: activePrompt, image: `data:image/png;base64,${part.inlineData.data}`, aspectRatio });
-            break;
-          }
+       const parts: any[] = [{ text: finalPrompt }];
+       if (sourceImage) {
+          const [, data] = sourceImage.split(',');
+          parts.unshift({ inlineData: { mimeType: 'image/png', data } });
+       }
+       const response = await currentAi.models.generateContent({
+        model: 'gemini-2.5-flash-image',
+        contents: { parts },
+        config: { 
+          imageConfig: { aspectRatio, seed: seed ? Number(seed) : undefined }, 
+          safetySettings: getSafetySettings(), 
+          systemInstruction: stylePreset === 'pony' ? PONY_SYSTEM_INSTRUCTION : UNRESTRICTED_SYSTEM_INSTRUCTION 
         }
       });
+      
+      const newResults: ImageGeneration[] = [];
+      for (const part of response.candidates?.[0]?.content?.parts || []) {
+        if (part.inlineData) {
+          newResults.push({ prompt: activePrompt, image: `data:image/png;base64,${part.inlineData.data}`, aspectRatio });
+          break;
+        }
+      }
+      
       if (newResults.length > 0) {
         setResults(overridePrompt ? prev => [...newResults, ...prev] : newResults);
       } else {
-        setError('Blocked by filters.');
+        setError('Response was blocked or filtered. Try a different prompt.');
       }
     } catch (e: any) {
-        if (isKeyError(e)) {
-            setError('API Key error.');
-            (window as any).aistudio?.openSelectKey?.();
-        } else {
-            setError(e.message || 'Failed.');
-        }
+        setError(e.message || 'An unexpected error occurred.');
     } finally {
       setIsGenerating(false);
     }
   };
 
   return (
-    <div className="h-full flex flex-col md:flex-row bg-slate-900 text-slate-100">
-      <div className="w-full md:w-80 p-6 border-r border-slate-800 flex flex-col gap-6 bg-slate-900/40">
-        <h2 className="text-lg font-bold flex items-center gap-2">
-          {stylePreset === 'pony' ? <Palette className="text-pink-400"/> : <Wand2 className="text-indigo-400" size={20}/>} 
+    <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+      <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-6 bg-[rgb(var(--color-panel))]">
+        <h2 className="text-lg font-bold flex items-center gap-3">
+          {stylePreset === 'pony' ? <Palette className="text-pink-400"/> : <Wand2 className="text-blue-400" size={22}/>} 
           Image Studio
         </h2>
-        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} className="w-full h-40 bg-slate-800/50 border border-slate-700/50 rounded-lg p-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500/50 resize-none transition-all" placeholder="Describe the scene..."/>
-        <button onClick={() => generateImage()} disabled={isGenerating || !prompt} className={`w-full py-4 hover:opacity-90 disabled:opacity-30 text-white rounded-xl font-bold shadow-lg transition-all active:scale-[0.98] ${stylePreset === 'pony' ? 'bg-pink-600' : 'bg-indigo-600'}`}>
-          {isGenerating ? <Loader2 className="animate-spin mx-auto" size={20}/> : 'GENERATE'}
+        <div className="space-y-4">
+            <div>
+                <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Prompt</label>
+                <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} className="w-full h-28 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-3 text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="e.g., A cinematic shot of a raccoon in a library..."/>
+            </div>
+             <div>
+                <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Negative Prompt</label>
+                <textarea value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} className="w-full h-16 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-3 text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="e.g., blurry, watermark, text..."/>
+            </div>
+             <div className="flex gap-4">
+                <div className="flex-1">
+                    <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Seed</label>
+                    <div className="flex">
+                        <input type="number" value={seed} onChange={e => setSeed(e.target.value)} placeholder="Random" className="w-full bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-l-lg p-2 text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" />
+                        <button onClick={() => setSeed(Math.floor(Math.random() * 1000000))} className="p-2 bg-[rgb(var(--color-panel-light))] border-y border-r border-[rgb(var(--color-border))] rounded-r-lg text-[rgb(var(--color-text-secondary))] hover:bg-[rgb(var(--color-border))]"><Dice5 size={18}/></button>
+                    </div>
+                </div>
+             </div>
+        </div>
+        <button onClick={() => generateImage()} disabled={isGenerating || !prompt} className={`w-full py-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-xl font-bold transition-colors active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed`}>
+          {isGenerating ? <Loader2 className="animate-spin mx-auto" size={24}/> : 'GENERATE'}
         </button>
+        {error && <div className="text-xs text-red-400 bg-red-900/50 p-3 rounded-lg border border-red-500/30">{error}</div>}
       </div>
-      <div className="flex-1 p-8 bg-slate-950/20 overflow-y-auto">
+      <div className="flex-1 p-8 bg-[rgb(var(--color-background))] overflow-y-auto">
         <div className="min-h-full flex flex-col items-center justify-center">
           {results.length > 0 ? (
-            <div className="grid gap-8 w-full max-w-6xl mx-auto md:grid-cols-2">
+            <div className="grid gap-6 w-full max-w-6xl mx-auto md:grid-cols-2">
               {results.map((res, idx) => (
-                <div key={idx} className="bg-slate-900/60 rounded-2xl p-3 border border-slate-800/50 shadow-2xl overflow-hidden group">
-                  <div className="relative overflow-hidden rounded-xl">
-                    <img src={res.image} className="w-full object-contain max-h-[65vh]" />
-                    <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                         <button onClick={() => onCreateVideo(res.image, res.prompt)} className="p-2 bg-slate-900/80 backdrop-blur-md rounded-lg text-white hover:bg-indigo-600 transition-colors"><VideoIcon size={18}/></button>
-                         <a href={res.image} download="gen.png" className="p-2 bg-slate-900/80 backdrop-blur-md rounded-lg text-white hover:bg-slate-700 transition-colors"><Download size={18}/></a>
+                <div key={idx} className="bg-[rgb(var(--color-panel))] rounded-xl p-2 border border-[rgb(var(--color-border))] group">
+                  <div className="relative rounded-lg overflow-hidden">
+                    <img src={res.image} className="w-full object-contain" />
+                    <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                         <button onClick={() => onCreateVideo(res.image, res.prompt)} className="p-2 bg-black/60 backdrop-blur-sm rounded-lg text-white hover:bg-black/80"><VideoIcon size={18}/></button>
+                         <a href={res.image} download="gen.png" className="p-2 bg-black/60 backdrop-blur-sm rounded-lg text-white hover:bg-black/80"><Download size={18}/></a>
                     </div>
                   </div>
                   <PostGenEdit onEdit={(newPrompt) => generateImage(newPrompt, res.image)} />
                 </div>
               ))}
             </div>
-          ) : <ImageIcon size={64} className="opacity-20"/>}
+          ) : <div className="text-center text-[rgb(var(--color-text-tertiary))]"><ImageIcon size={64} /><p className="mt-2 text-sm">Generated images will appear here</p></div>}
         </div>
       </div>
     </div>
   );
 };
 
-const UnifiedVideoWorkspace = ({ initialData, onDataConsumed, mode = 'standard' }: { initialData?: { image: string, prompt: string } | null, onDataConsumed?: () => void, mode?: string }) => {
+const ImageEditWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+    const [sourceImage, setSourceImage] = useState<{ url: string; base64: string; mimeType: string } | null>(null);
+    const [editPrompt, setEditPrompt] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState('');
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files[0]) {
+            const file = e.target.files[0];
+            const base64 = await blobToBase64(file);
+            setSourceImage({ url: URL.createObjectURL(file), base64, mimeType: file.type });
+            setError('');
+        }
+    };
+
+    const handleEdit = async () => {
+        if (!sourceImage || !editPrompt.trim() || isLoading) return;
+        setIsLoading(true);
+        setError('');
+        try {
+            const response = await ai.models.generateContent({
+                model: 'gemini-2.5-flash-image',
+                contents: {
+                    parts: [
+                        { inlineData: { data: sourceImage.base64, mimeType: sourceImage.mimeType } },
+                        { text: editPrompt }
+                    ]
+                },
+                 safetySettings: getSafetySettings()
+            });
+            const imagePart = response.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+            if (imagePart?.inlineData) {
+                const newBase64 = imagePart.inlineData.data;
+                const newMimeType = imagePart.inlineData.mimeType;
+                setSourceImage(prev => ({ ...prev!, base64: newBase64, mimeType: newMimeType, url: `data:${newMimeType};base64,${newBase64}` }));
+            } else {
+                setError('Could not generate an edit. The prompt might have been blocked.');
+            }
+        } catch (e: any) {
+            console.error(e);
+            setError(e.message || 'An unexpected error occurred during editing.');
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+            <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-6 bg-[rgb(var(--color-panel))]">
+                <h2 className="text-lg font-bold flex items-center gap-3"><Aperture size={22} className="text-lime-400" /> Image Editor</h2>
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-sm font-semibold text-[rgb(var(--color-text-secondary))]">1. Upload Image</label>
+                        <label className="w-full h-40 bg-[rgb(var(--color-panel-light))] border-2 border-dashed border-[rgb(var(--color-border))] rounded-xl flex items-center justify-center cursor-pointer hover:border-[rgb(var(--color-accent))] transition-colors">
+                            <input type="file" accept="image/*" onChange={handleFileSelect} className="hidden" />
+                            <div className="text-center text-[rgb(var(--color-text-tertiary))]">
+                                <Upload size={24} className="mx-auto mb-2" />
+                                <p className="text-sm font-semibold">Click or drag to upload</p>
+                                <p className="text-xs">PNG, JPG, WEBP</p>
+                            </div>
+                        </label>
+                    </div>
+                     <div className="space-y-2">
+                        <label className="text-sm font-semibold text-[rgb(var(--color-text-secondary))]">2. Describe Edit</label>
+                        <textarea value={editPrompt} onChange={e => setEditPrompt(e.target.value)} className="w-full h-24 bg-[rgb(var(--color-panel-light))] p-3 rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="e.g., Add a retro cinematic filter..." />
+                    </div>
+                </div>
+                <button onClick={handleEdit} disabled={!sourceImage || !editPrompt.trim() || isLoading} className="w-full mt-auto py-3 bg-lime-600 hover:bg-lime-700 text-white font-bold rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                    {isLoading ? <Loader2 className="animate-spin mx-auto"/> : 'Apply Edit'}
+                </button>
+                 {error && <p className="text-xs text-red-400 bg-red-900/50 p-3 rounded-lg border border-red-500/30">{error}</p>}
+            </div>
+            <div className="flex-1 p-8 bg-[rgb(var(--color-background))] flex items-center justify-center">
+                {sourceImage ? (
+                    <img src={sourceImage.url} alt="Editable image" className="max-h-full max-w-full object-contain rounded-lg shadow-2xl shadow-black/30" />
+                ) : (
+                    <div className="text-center text-[rgb(var(--color-text-tertiary))]">
+                        <Aperture size={64} />
+                        <p className="mt-2 font-medium">Upload an image to start editing</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const UnifiedVideoWorkspace = ({ initialData, onDataConsumed }: { initialData?: { image: string, prompt: string } | null, onDataConsumed?: () => void }) => {
   const [prompt, setPrompt] = useState('');
+  const [promptQueue, setPromptQueue] = useState<string[]>([]);
+  const [currentGeneratingIndex, setCurrentGeneratingIndex] = useState<number | null>(null);
   const [extensionPrompt, setExtensionPrompt] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRefining, setIsRefining] = useState(false);
-  const [isListening, setIsListening] = useState(false);
   const [results, setResults] = useState<VideoGeneration[]>([]);
   const [selectedImage, setSelectedImage] = useState<{ url: string, base64: string, mimeType: string } | null>(null);
-  const [loadingStep, setLoadingStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
-
-  const loadingMessages = [
-    "Establishing neural link...",
-    "Analyzing visual descriptors...",
-    "Synthesizing motion vectors...",
-    "Temporal rendering in progress...",
-    "Polishing cinematic details...",
-    "Finalizing video stream...",
-    "Almost there! Just a few more seconds..."
-  ];
-
-  const getThemeBg = () => mode === 'standard' ? 'from-pink-600 to-purple-600' : 'from-cyan-600 to-blue-600';
+  const [selectedModel, setSelectedModel] = useState<VideoModel>('veo');
+  const [targetDuration, setTargetDuration] = useState(10);
+  const [flowProgress, setFlowProgress] = useState<{ current: number; target: number; videoId: string | null }>({ current: 0, target: 0, videoId: null });
 
   useEffect(() => {
     if (initialData) {
@@ -395,19 +549,6 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed, mode = 'standard' 
       onDataConsumed?.();
     }
   }, [initialData]);
-
-  useEffect(() => {
-    let interval: any;
-    if (isGenerating) {
-      setLoadingStep(0);
-      interval = setInterval(() => {
-        setLoadingStep((prev) => (prev < loadingMessages.length - 1 ? prev + 1 : prev));
-      }, 12000); 
-    } else {
-      setLoadingStep(0);
-    }
-    return () => clearInterval(interval);
-  }, [isGenerating]);
 
   const refinePrompt = async () => {
       if (!prompt.trim() || isRefining) return;
@@ -423,22 +564,37 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed, mode = 'standard' 
       } catch (e) { console.error(e); } finally { setIsRefining(false); }
   };
 
-  const generateVideo = async () => {
-    if (!prompt.trim() && !selectedImage || isGenerating) return;
-    if ((window as any).aistudio) {
-        if (!(await (window as any).aistudio.hasSelectedApiKey())) await (window as any).aistudio.openSelectKey();
+  const handleAddToQueue = () => {
+    if (prompt.trim()) {
+        setPromptQueue(prev => [...prev, prompt.trim()]);
+        setPrompt('');
     }
-    setIsGenerating(true);
+  };
+
+  const handleRemoveFromQueue = (indexToRemove: number) => {
+    setPromptQueue(prev => prev.filter((_, index) => index !== indexToRemove));
+  };
+  
+  const generateSingleVideo = async (promptToGenerate: string, model: VideoModel) => {
+    if (!promptToGenerate.trim() && (model === 'zImage' && !selectedImage)) return null;
     setError(null);
     try {
       const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+
+      let modelName = 'veo-3.1-fast-generate-preview';
+      if (model === 'longcat' || model === 'flow') {
+        modelName = 'veo-3.1-generate-preview';
+      }
+
       const params: any = { 
-          model: 'veo-3.1-fast-generate-preview', 
-          prompt: prompt, 
+          model: modelName, 
+          prompt: promptToGenerate, 
           safetySettings: getSafetySettings(), 
           config: { numberOfVideos: 1, resolution: '720p', aspectRatio: '16:9' } 
       };
-      if (selectedImage) params.image = { imageBytes: selectedImage.base64, mimeType: selectedImage.mimeType };
+      if (selectedImage) {
+        params.image = { imageBytes: selectedImage.base64, mimeType: selectedImage.mimeType };
+      }
       let operation = await currentAi.models.generateVideos(params);
       while (!operation.done) {
         await new Promise(r => setTimeout(r, 10000));
@@ -446,25 +602,59 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed, mode = 'standard' 
       }
       if (operation.error) throw operation.error;
       const videoAsset = operation.response?.generatedVideos?.[0]?.video;
-      if (!videoAsset?.uri) throw new Error("Blocked.");
+      if (!videoAsset?.uri) throw new Error("Video generation was blocked or failed.");
       const vidResponse = await fetch(`${videoAsset.uri}&key=${process.env.API_KEY}`);
+      if (!vidResponse.ok) throw new Error("Could not fetch video resource. Check API key and billing.");
       const vidBlob = await vidResponse.blob();
-      setResults(prev => [{ 
+      
+      const newVideo: VideoGeneration = { 
         id: Math.random().toString(36).substr(2, 9),
-        prompt: prompt, 
+        prompt: promptToGenerate, 
         videoUrl: URL.createObjectURL(vidBlob),
         videoAsset: videoAsset,
         durationSeconds: 5 
-      }, ...prev]);
-    } catch (e: any) { setError(e.message || "Failed."); } finally { setIsGenerating(false); }
+      };
+      return newVideo;
+    } catch (e: any) { 
+        setError(e.message || "A generation failed.");
+        throw e;
+    }
+  };
+  
+  const startBatchGeneration = async () => {
+    if (promptQueue.length === 0 || isGenerating) return;
+
+    if ((window as any).aistudio) {
+        if (!(await (window as any).aistudio.hasSelectedApiKey())) {
+            await (window as any).aistudio.openSelectKey();
+        }
+    }
+    
+    setIsGenerating(true);
+    const newResults: VideoGeneration[] = [];
+    for (let i = 0; i < promptQueue.length; i++) {
+        setCurrentGeneratingIndex(i);
+        try {
+            const result = await generateSingleVideo(promptQueue[i], selectedModel);
+            if (result) newResults.push(result);
+        } catch (e: any) {
+            console.error(`Failed to generate video for prompt: "${promptQueue[i]}"`, e);
+             if (isKeyError(e) && (window as any).aistudio) {
+                setError('API Key error. Please select a valid key with billing enabled. The generation queue has been stopped.');
+                await (window as any).aistudio.openSelectKey();
+                break;
+            }
+            setError(`Generation failed for prompt ${i+1}. Skipping to next.`);
+        }
+    }
+    setResults(prev => [...newResults, ...prev]);
+    setIsGenerating(false);
+    setCurrentGeneratingIndex(null);
   };
 
-  const extendVideo = async (video: VideoGeneration) => {
-    if (video.durationSeconds >= 60 || video.isExtending) return;
-    setResults(prev => prev.map(v => v.id === video.id ? { ...v, isExtending: true } : v));
+  const extendVideoAsset = async (video: VideoGeneration, extPrompt: string): Promise<VideoGeneration | null> => {
     try {
       const currentAi = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
-      const extPrompt = extensionPrompt || "The scene continues smoothly with cinematic camera work.";
       let operation = await currentAi.models.generateVideos({
         model: 'veo-3.1-generate-preview', 
         prompt: extPrompt,
@@ -480,135 +670,531 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed, mode = 'standard' 
       if (!videoAsset?.uri) throw new Error("Filtered.");
       const vidResponse = await fetch(`${videoAsset.uri}&key=${process.env.API_KEY}`);
       const vidBlob = await vidResponse.blob();
-      setResults(prev => prev.map(v => v.id === video.id ? { 
-        ...v, 
+      return { 
+        ...video,
         videoUrl: URL.createObjectURL(vidBlob), 
         videoAsset: videoAsset,
-        durationSeconds: Math.min(60, v.durationSeconds + 7),
-        isExtending: false
-      } : v));
-      setExtensionPrompt('');
+        durationSeconds: Math.min(60, video.durationSeconds + 7),
+      };
     } catch (e: any) {
       console.error(e);
-      setResults(prev => prev.map(v => v.id === video.id ? { ...v, isExtending: false } : v));
+      setError(e.message || "Extension failed.");
+      return null;
     }
+  }
+
+  const extendVideo = async (video: VideoGeneration) => {
+    if (video.durationSeconds >= 60 || video.isExtending) return;
+    setResults(prev => prev.map(v => v.id === video.id ? { ...v, isExtending: true } : v));
+    const extendedVideo = await extendVideoAsset(video, extensionPrompt || "The scene continues smoothly.");
+    if(extendedVideo) {
+       setResults(prev => prev.map(v => v.id === video.id ? { ...extendedVideo, isExtending: false } : v));
+    } else {
+       setResults(prev => prev.map(v => v.id === video.id ? { ...v, isExtending: false } : v));
+    }
+    setExtensionPrompt('');
   };
 
+  const startFlowGeneration = async () => {
+    if (!prompt.trim() || isGenerating) return;
+
+    if ((window as any).aistudio) {
+        if (!(await (window as any).aistudio.hasSelectedApiKey())) {
+            await (window as any).aistudio.openSelectKey();
+        }
+    }
+    
+    setIsGenerating(true);
+    setResults([]); // Clear previous results for a new flow
+    
+    let currentVideo = await generateSingleVideo(prompt, 'flow');
+    if (!currentVideo) {
+        setIsGenerating(false);
+        return;
+    }
+    
+    setResults([currentVideo]);
+    setFlowProgress({ current: currentVideo.durationSeconds, target: targetDuration, videoId: currentVideo.id });
+
+    while(currentVideo.durationSeconds < targetDuration) {
+        const extendedVideo = await extendVideoAsset(currentVideo, "The scene continues to evolve naturally and seamlessly.");
+        if (!extendedVideo) {
+            setError("Flow generation was interrupted during extension.");
+            break;
+        }
+        currentVideo = extendedVideo;
+        setResults([currentVideo]); // Replace the old video with the new extended one
+        setFlowProgress(prev => ({ ...prev, current: currentVideo!.durationSeconds }));
+    }
+
+    setIsGenerating(false);
+    setFlowProgress({ current: 0, target: 0, videoId: null });
+  };
+  
+  const isBatchGenerateDisabled = isGenerating || promptQueue.length === 0;
+  const isFlowGenerateDisabled = isGenerating || !prompt.trim();
+
   return (
-    <div className="h-full flex flex-col md:flex-row bg-slate-900 text-slate-100">
-      <div className="w-full md:w-80 p-6 border-r border-slate-800 flex flex-col gap-6 overflow-y-auto bg-slate-900/40 shrink-0">
-        <h2 className="text-lg font-bold flex items-center gap-2 text-indigo-100">
-            <Film size={20} className="text-indigo-400"/>
-            Motion Engine
+    <div className="h-full flex flex-col md:flex-row bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))]">
+      <div className="w-full md:w-96 p-6 border-r border-[rgb(var(--color-border))] flex flex-col gap-4 bg-[rgb(var(--color-panel))]">
+        <h2 className="text-lg font-bold flex items-center gap-3">
+            <Film size={22} className="text-blue-400"/>
+            Video Control Deck
         </h2>
-        <div className="space-y-4">
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Base Prompt</label>
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} className="w-full h-32 bg-black/40 border border-slate-700/50 rounded-lg p-3 text-sm focus:outline-none transition-all focus:ring-1 focus:ring-indigo-500/50" placeholder="Start your story..." />
-            <button onClick={refinePrompt} className="w-full py-2 bg-slate-800 hover:bg-slate-700 rounded-lg text-[10px] font-bold uppercase tracking-widest flex items-center justify-center gap-2">
-                {isRefining ? <Loader2 size={12} className="animate-spin" /> : <Settings2 size={12} />}
-                Refine for Bypass
-            </button>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Extension Logic</label>
-            <textarea value={extensionPrompt} onChange={(e) => setExtensionPrompt(e.target.value)} className="w-full h-20 bg-indigo-500/5 border border-indigo-500/20 rounded-lg p-3 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500/50" placeholder="What happens next? (Optional)" />
-            <p className="text-[9px] text-slate-500">Add instructions before clicking 'Extend' on a video.</p>
-          </div>
-
-          <button onClick={generateVideo} disabled={isGenerating} className={`w-full py-4 bg-gradient-to-r ${getThemeBg()} text-white rounded-xl font-bold shadow-xl transition-all active:scale-[0.98] disabled:opacity-30`}>
-            {isGenerating ? <Loader2 className="animate-spin mx-auto" size={20}/> : 'GENERATE (5s)'}
-          </button>
+        <div className="space-y-2">
+            <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))]">Generation Model</label>
+            <div className="space-y-2">
+              <ModelButton icon={<VideoIcon size={18}/>} label="Veo" description="Standard high-quality generation" active={selectedModel === 'veo'} onClick={() => setSelectedModel('veo')} />
+              <ModelButton icon={<ImageIcon size={18}/>} label="Z-Image Turbo" description="Fast image-to-video synthesis" active={selectedModel === 'zImage'} onClick={() => setSelectedModel('zImage')} />
+              <ModelButton icon={<Timer size={18}/>} label="Longcat" description="Optimized for longer sequences" active={selectedModel === 'longcat'} onClick={() => setSelectedModel('longcat')} />
+              <ModelButton icon={<Layers size={18}/>} label="Flow" description="Generates long-form motion pictures" active={selectedModel === 'flow'} onClick={() => setSelectedModel('flow')} />
+            </div>
         </div>
 
-        {selectedImage && (
-            <div className="mt-auto pt-4 border-t border-slate-800/50">
-                <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 block">Seed Image</label>
-                <div className="relative rounded-lg overflow-hidden border border-slate-700">
-                    <img src={selectedImage.url} className="w-full h-24 object-cover" />
-                    <button onClick={() => setSelectedImage(null)} className="absolute top-1 right-1 p-1 bg-black/60 rounded-full hover:bg-red-500 transition-colors"><X size={12}/></button>
+        <div className="space-y-1">
+            <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))]">Motion Prompt</label>
+            <div className="flex gap-2">
+                <input type="text" value={prompt} onChange={(e) => setPrompt(e.target.value)} className="flex-1 bg-[rgb(var(--color-panel-light))] p-2 rounded-lg border border-[rgb(var(--color-border))] text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0" placeholder={selectedModel === 'flow' ? "Describe the entire scene..." : "Add prompt to queue..."} onKeyDown={(e) => e.key === 'Enter' && selectedModel !== 'flow' && handleAddToQueue()}/>
+                {selectedModel !== 'flow' && <button onClick={handleAddToQueue} className="p-2 bg-[rgb(var(--color-accent))] rounded-lg hover:bg-[rgb(var(--color-accent-dark))] transition-colors"><Plus size={16} /></button>}
+            </div>
+        </div>
+
+        {selectedModel === 'flow' && (
+            <div className="space-y-2">
+                <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] flex justify-between items-center">
+                    <span>Target Duration</span>
+                    <span className="font-mono text-xs text-[rgb(var(--color-text-primary))] bg-[rgb(var(--color-panel-light))] px-1.5 py-0.5 rounded">{targetDuration}s</span>
+                </label>
+                <input type="range" min="5" max="60" step="1" value={targetDuration} onChange={e => setTargetDuration(Number(e.target.value))} className="w-full h-2 bg-[rgb(var(--color-panel-light))] rounded-lg appearance-none cursor-pointer accent-blue-500" />
+                <div className="flex items-center gap-2 text-xs text-[rgb(var(--color-text-tertiary))]">
+                  <Info size={14} />
+                  <p>Longer videos can take several minutes to generate.</p>
                 </div>
             </div>
         )}
-      </div>
 
-      <div className="flex-1 p-8 bg-black overflow-y-auto flex flex-col items-center">
-        <div className="min-h-full w-full max-w-4xl flex flex-col items-center justify-center">
-          {isGenerating ? (
-              <div className="text-center">
-                  <Loader2 size={48} className="animate-spin text-indigo-500 mx-auto mb-6" />
-                  <p className="text-indigo-400 font-bold uppercase tracking-widest text-sm animate-pulse">{loadingMessages[loadingStep]}</p>
+        {selectedModel !== 'flow' && (
+            <div className="space-y-2 flex-1 flex flex-col min-h-0">
+                <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))]">Generation Queue ({promptQueue.length})</label>
+                <div className="flex-1 overflow-y-auto space-y-2 p-2 bg-[rgb(var(--color-panel-light))] rounded-lg min-h-0 border border-[rgb(var(--color-border))]">
+                    {promptQueue.length === 0 && <p className="text-xs text-[rgb(var(--color-text-tertiary))] text-center p-4">Add prompts to start a batch.</p>}
+                    {promptQueue.map((p, index) => (
+                        <div key={index} className={`flex items-center justify-between p-2 rounded-md text-xs transition-colors ${currentGeneratingIndex === index ? 'bg-blue-500/10' : 'bg-[rgb(var(--color-panel))]'}`}>
+                            <span className="flex-1 line-clamp-2 pr-2">{p}</span>
+                            <div className="shrink-0 w-4 h-4 text-[rgb(var(--color-text-secondary))]">
+                              {isGenerating && currentGeneratingIndex === index && <Loader2 size={14} className="animate-spin text-blue-400"/>}
+                              {isGenerating && currentGeneratingIndex !== null && currentGeneratingIndex > index && <Check size={14} className="text-green-500"/>}
+                              {!isGenerating && <button onClick={() => handleRemoveFromQueue(index)} className="hover:text-red-500"><X size={14}/></button>}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
+         {!selectedImage ? (
+             <label className="w-full h-24 bg-[rgb(var(--color-panel-light))] border-2 border-dashed border-[rgb(var(--color-border))] rounded-xl flex items-center justify-center cursor-pointer hover:border-[rgb(var(--color-accent))] transition-colors mt-auto">
+                <input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && blobToBase64(e.target.files[0]).then(b64 => setSelectedImage({url: URL.createObjectURL(e.target.files![0]), base64: b64, mimeType: e.target.files![0].type}))} className="hidden" />
+                <div className="text-center text-[rgb(var(--color-text-tertiary))]">
+                    <Upload size={20} className="mx-auto mb-1" />
+                    <p className="text-xs font-semibold">Add Optional Seed Image</p>
+                </div>
+            </label>
+         ) : (
+            <div className="relative rounded-lg overflow-hidden border border-[rgb(var(--color-border))] h-20 mt-auto">
+                <img src={selectedImage.url} className="w-full h-full object-cover" />
+                <button onClick={() => setSelectedImage(null)} className="absolute top-1 right-1 p-1 bg-black/60 rounded-full hover:bg-black/80 transition-colors"><X size={12}/></button>
+            </div>
+        )}
+
+        {selectedModel === 'flow' ? (
+             <button onClick={startFlowGeneration} disabled={isFlowGenerateDisabled} className="w-full py-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {isGenerating ? `GENERATING...` : `Generate Flow`}
+            </button>
+        ) : (
+            <button onClick={startBatchGeneration} disabled={isBatchGenerateDisabled} className="w-full py-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] text-white rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                {isGenerating ? `GENERATING ${currentGeneratingIndex! + 1}/${promptQueue.length}...` : `GENERATE QUEUE (${promptQueue.length})`}
+            </button>
+        )}
+      </div>
+      <div className="flex-1 p-8 bg-[rgb(var(--color-background))] overflow-y-auto flex flex-col items-center">
+          {results.length > 0 ? results.map((res) => {
+            const isFlowGenerating = flowProgress.videoId === res.id;
+            const flowPercentage = isFlowGenerating ? (flowProgress.current / flowProgress.target) * 100 : (res.durationSeconds / 60) * 100;
+            return (
+            <div key={res.id} className="bg-[rgb(var(--color-panel))] p-3 rounded-xl border border-[rgb(var(--color-border))] mb-8 w-full max-w-4xl">
+              <video key={res.videoUrl} src={res.videoUrl} controls autoPlay loop className="w-full rounded-lg bg-black" />
+              <div className="mt-3">
+                {isFlowGenerating ? (
+                    <div className="relative h-2 w-full bg-[rgb(var(--color-panel-light))] rounded-full overflow-hidden">
+                        <div style={{width: `${flowPercentage}%`}} className="h-full bg-[rgb(var(--color-accent))] rounded-full transition-all duration-500"/>
+                    </div>
+                ) : (
+                    <div style={{width: `${flowPercentage}%`}} className="h-1 bg-[rgb(var(--color-accent))] rounded-full" />
+                )}
               </div>
-          ) : results.length > 0 ? results.map((res) => (
-            <div key={res.id} className="bg-slate-900/40 p-5 rounded-3xl border border-slate-800/50 mb-10 w-full relative">
-              {res.isExtending && (
-                <div className="absolute inset-0 bg-black/80 z-20 flex flex-col items-center justify-center rounded-3xl backdrop-blur-md">
-                    <Loader2 size={32} className="text-indigo-500 animate-spin mb-3" />
-                    <p className="text-indigo-400 font-bold uppercase tracking-widest text-[10px]">Processing +7s Segment...</p>
-                </div>
-              )}
-              <div className="relative rounded-2xl overflow-hidden shadow-2xl bg-black aspect-video">
-                  <video key={res.videoUrl} src={res.videoUrl} controls autoPlay loop className="w-full h-full object-contain" />
-                  <div className="absolute top-4 right-4 bg-black/60 px-3 py-1 rounded-full border border-white/10 flex items-center gap-2">
-                      <Timer size={12} className="text-indigo-400" />
-                      <span className="text-[10px] font-bold text-white">{res.durationSeconds}s / 60s</span>
-                  </div>
-                  {/* Extension Progress Bar */}
-                  <div className="absolute bottom-0 left-0 h-1 bg-indigo-500 transition-all duration-500" style={{ width: `${(res.durationSeconds / 60) * 100}%` }} />
-              </div>
-              <div className="mt-5 flex justify-between items-start gap-4 px-2">
-                <div>
-                    <h4 className="text-sm font-bold text-white mb-1 line-clamp-1">{res.prompt}</h4>
-                    <p className="text-[10px] text-slate-500 uppercase tracking-widest">720p HD • {res.durationSeconds >= 60 ? 'Extended to Limit' : 'Extension Ready'}</p>
-                </div>
-                <div className="flex gap-2">
-                    <button 
-                      onClick={() => extendVideo(res)} 
-                      disabled={res.durationSeconds >= 60 || res.isExtending}
-                      className="flex items-center gap-2 px-4 py-2 bg-indigo-600/20 text-indigo-400 rounded-lg hover:bg-indigo-600 hover:text-white transition-all border border-indigo-500/30 disabled:opacity-20"
-                    >
-                      <Plus size={18}/>
-                      <span className="text-xs font-bold uppercase tracking-widest">Extend +7s</span>
-                    </button>
-                    <a href={res.videoUrl} download={`xmod-${res.id}.mp4`} className="p-2 bg-slate-800 text-slate-300 rounded-lg hover:bg-slate-700 transition-all"><Download size={20}/></a>
-                </div>
+
+              <div className="mt-3 flex justify-between items-center">
+                <p className="text-sm font-medium text-[rgb(var(--color-text-secondary))] line-clamp-1">{res.prompt}</p>
+                {isFlowGenerating ? (
+                     <p className="text-xs font-mono text-blue-300">Extending... {flowProgress.current}s / {flowProgress.target}s</p>
+                ) : (
+                    <div className="flex gap-2">
+                        <button onClick={() => extendVideo(res)} disabled={res.durationSeconds >= 60 || res.isExtending} className="p-2 bg-[rgb(var(--color-panel-light))] hover:bg-[rgb(var(--color-border))] rounded-lg disabled:opacity-50">{res.isExtending ? <Loader2 size={18} className="animate-spin" /> : <Plus size={18}/>}</button>
+                        <a href={res.videoUrl} download={`xmod-${res.id}.mp4`} className="p-2 bg-[rgb(var(--color-panel-light))] hover:bg-[rgb(var(--color-border))] rounded-lg"><Download size={18}/></a>
+                    </div>
+                )}
               </div>
             </div>
-          )) : error ? (
-            <div className="text-center max-w-md bg-red-500/5 p-8 rounded-3xl border border-red-500/20">
-                <AlertCircle size={48} className="text-red-500 mx-auto mb-4 opacity-50"/>
-                <p className="text-red-400 text-sm font-bold">{error}</p>
-            </div>
-          ) : <Film size={80} className="opacity-10" />}
+          )}) : <div className="text-center text-[rgb(var(--color-text-tertiary))] flex flex-col items-center justify-center h-full"><Film size={64}/> <p className="mt-2">Generated videos will appear here.</p></div>}
+      </div>
+    </div>
+  );
+};
+
+const ModelButton = ({ icon, label, description, active, onClick }: { icon: React.ReactNode, label: string, description: string, active: boolean, onClick: () => void }) => (
+    <button onClick={onClick} className={`flex items-center gap-4 p-3 rounded-lg border-2 text-left w-full transition-colors ${active ? 'border-blue-500 bg-blue-500/10' : 'border-[rgb(var(--color-border))] bg-[rgb(var(--color-panel-light))] hover:border-blue-500/50'}`}>
+        <div className={`p-2 rounded-md ${active ? 'bg-blue-500/20 text-blue-400' : 'bg-[rgb(var(--color-border))] text-[rgb(var(--color-text-secondary))]'}`}>{icon}</div>
+        <div>
+            <p className={`font-bold text-sm ${active ? 'text-white' : 'text-[rgb(var(--color-text-primary))]'}`}>{label}</p>
+            <p className="text-xs text-[rgb(var(--color-text-secondary))]">{description}</p>
         </div>
-      </div>
-    </div>
-  );
+    </button>
+)
+
+const TTSWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+    const [text, setText] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [audioData, setAudioData] = useState<AudioBuffer | null>(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [selectedVoice, setSelectedVoice] = useState('Kore');
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
+
+    useEffect(() => {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+        return () => audioContextRef.current?.close();
+    }, []);
+
+    const generateSpeech = async () => {
+        if (!text.trim() || isLoading) return;
+        setIsLoading(true);
+        setAudioData(null);
+        try {
+            const response = await ai.models.generateContent({
+                model: "gemini-2.5-flash-preview-tts",
+                contents: [{ parts: [{ text }] }],
+                config: {
+                    responseModalities: [Modality.AUDIO],
+                    speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } },
+                },
+            });
+            const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+            if (base64Audio && audioContextRef.current) {
+                const audioBytes = decode(base64Audio);
+                const buffer = await decodeAudioData(audioBytes, audioContextRef.current, 24000, 1);
+                setAudioData(buffer);
+            }
+        } catch (e) { console.error(e); } finally { setIsLoading(false); }
+    };
+
+    const togglePlayback = () => {
+        if (!audioData || !audioContextRef.current) return;
+        if (isPlaying) {
+            audioSourceRef.current?.stop();
+            setIsPlaying(false);
+        } else {
+            const source = audioContextRef.current.createBufferSource();
+            source.buffer = audioData;
+            source.connect(audioContextRef.current.destination);
+            source.onended = () => setIsPlaying(false);
+            source.start();
+            audioSourceRef.current = source;
+            setIsPlaying(true);
+        }
+    };
+    
+    return (
+        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
+            <div className="w-full max-w-2xl space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
+                <div className="text-center">
+                    <Voicemail size={40} className="text-sky-400 mx-auto" />
+                    <h2 className="text-2xl font-bold mt-2">Speech Synthesis</h2>
+                </div>
+                <textarea value={text} onChange={(e) => setText(e.target.value)} className="w-full h-40 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-4 focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="Enter text to generate speech..."/>
+                <select value={selectedVoice} onChange={e => setSelectedVoice(e.target.value)} className="w-full p-3 bg-[rgb(var(--color-panel-light))] rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors">
+                    <option value="Kore">Kore (Female)</option>
+                    <option value="Puck">Puck (Male)</option>
+                    <option value="Zephyr">Zephyr (Female)</option>
+                    <option value="Charon">Charon (Male)</option>
+                </select>
+                <button onClick={generateSpeech} disabled={isLoading || !text.trim()} className="w-full py-3 bg-sky-600 hover:bg-sky-700 text-white rounded-lg font-bold transition-colors disabled:opacity-50">
+                    {isLoading ? <Loader2 className="animate-spin mx-auto"/> : "Generate Speech"}
+                </button>
+                {audioData && (
+                    <div className="p-4 bg-[rgb(var(--color-panel-light))] rounded-lg flex items-center gap-4 border border-[rgb(var(--color-border))]">
+                        <button onClick={togglePlayback} className="p-3 bg-[rgb(var(--color-accent))] hover:bg-[rgb(var(--color-accent-dark))] rounded-full transition-colors">{isPlaying ? <Pause/> : <Play/>}</button>
+                        <p className="text-sm text-[rgb(var(--color-text-secondary))]">Speech generated. Press play to listen.</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
 };
 
-const LiveWorkspace = () => {
-  const [active, setActive] = useState(false);
-  return (
-    <div className="h-full flex flex-col items-center justify-center bg-slate-900">
-      <div className={`w-40 h-40 rounded-full flex items-center justify-center transition-all ${active ? 'bg-red-500/10 shadow-[0_0_80px_rgba(239,68,68,0.2)]' : 'bg-slate-800'}`}>
-         <Mic size={64} className={active ? 'text-red-500' : 'text-slate-500'} />
-      </div>
-      <button onClick={() => setActive(!active)} className={`mt-10 px-10 py-4 rounded-full font-black text-lg transition-all ${active ? 'bg-red-600 text-white' : 'bg-white text-black'}`}>
-        {active ? 'END SESSION' : 'START LIVE'}
-      </button>
-    </div>
-  );
+const TranscribeWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+    const [isRecording, setIsRecording] = useState(false);
+    const [transcript, setTranscript] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioChunksRef = useRef<Blob[]>([]);
+
+    const startRecording = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorderRef.current = new MediaRecorder(stream);
+            mediaRecorderRef.current.ondataavailable = (e) => audioChunksRef.current.push(e.data);
+            mediaRecorderRef.current.onstop = transcribeAudio;
+            audioChunksRef.current = [];
+            mediaRecorderRef.current.start();
+            setIsRecording(true);
+            setTranscript('');
+        } catch (e) { console.error("Mic access denied", e); }
+    };
+    
+    const stopRecording = () => {
+        mediaRecorderRef.current?.stop();
+        setIsRecording(false);
+        setIsLoading(true);
+    };
+    
+    const transcribeAudio = async () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const base64Audio = await blobToBase64(audioBlob);
+        try {
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-preview',
+                contents: { parts: [{ inlineData: { mimeType: 'audio/webm', data: base64Audio } }, { text: "Transcribe this audio." }] }
+            });
+            setTranscript(response.text || "Could not transcribe.");
+        } catch (e) {
+            console.error(e);
+            setTranscript("Transcription failed.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
+    return (
+        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
+            <div className="w-full max-w-2xl text-center space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
+                <Speech size={40} className="text-teal-400 mx-auto" />
+                <h2 className="text-2xl font-bold">Audio Transcription</h2>
+                <button onClick={isRecording ? stopRecording : startRecording} className={`px-8 py-4 rounded-full font-bold text-lg transition-all duration-300 ${isRecording ? 'bg-red-600 animate-pulse' : 'bg-teal-500'}`}>
+                    {isRecording ? "Stop Recording" : "Start Recording"}
+                </button>
+                {(isLoading || transcript) && <div className="p-6 bg-[rgb(var(--color-panel-light))] rounded-lg text-left whitespace-pre-wrap min-h-[100px] border border-[rgb(var(--color-border))]">
+                    {isLoading ? <Loader2 className="mx-auto animate-spin my-4"/> : transcript}
+                </div>}
+            </div>
+        </div>
+    );
 };
 
-const SidebarButton = ({ icon, active, onClick, color, bg, label, isExpanded }: any) => (
+const VideoAnalysisWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+    const [videoFile, setVideoFile] = useState<File | null>(null);
+    const [prompt, setPrompt] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [analysis, setAnalysis] = useState('');
+    
+    const handleAnalysis = async () => {
+        if (!videoFile || !prompt.trim()) return;
+        setIsLoading(true);
+        setAnalysis('');
+        try {
+            const base64Video = await blobToBase64(videoFile);
+            const response = await ai.models.generateContent({
+                model: 'gemini-3-pro-preview',
+                contents: { parts: [
+                    { inlineData: { mimeType: videoFile.type, data: base64Video } },
+                    { text: prompt }
+                ]}
+            });
+            setAnalysis(response.text || "No analysis available.");
+        } catch (e) { console.error(e); setAnalysis("Analysis failed."); } finally { setIsLoading(false); }
+    };
+    
+    return (
+        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] p-8">
+            <div className="w-full max-w-2xl text-center space-y-6 bg-[rgb(var(--color-panel))] p-8 rounded-2xl border border-[rgb(var(--color-border))]">
+                <Clapperboard size={40} className="text-rose-400 mx-auto" />
+                <h2 className="text-2xl font-bold">Video Analysis</h2>
+                <input type="file" accept="video/*" onChange={e => setVideoFile(e.target.files?.[0] || null)} className="w-full text-sm text-[rgb(var(--color-text-secondary))] file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-[rgb(var(--color-panel-light))] file:text-[rgb(var(--color-text-primary))] hover:file:bg-[rgb(var(--color-border))] file:cursor-pointer"/>
+                <textarea value={prompt} onChange={e => setPrompt(e.target.value)} className="w-full h-24 bg-[rgb(var(--color-panel-light))] p-4 rounded-lg border border-[rgb(var(--color-border))] focus:border-[rgb(var(--color-accent))] focus:ring-0" placeholder="What should I look for in the video?"/>
+                <button onClick={handleAnalysis} disabled={isLoading || !videoFile || !prompt.trim()} className="w-full py-3 bg-rose-600 hover:bg-rose-700 font-bold rounded-lg transition-colors disabled:opacity-50">
+                    {isLoading ? <Loader2 className="animate-spin mx-auto"/> : "Analyze Video"}
+                </button>
+                {analysis && <div className="p-6 bg-[rgb(var(--color-panel-light))] rounded-lg text-left whitespace-pre-wrap border border-[rgb(var(--color-border))]">{analysis}</div>}
+            </div>
+        </div>
+    );
+};
+
+const LiveWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
+    const [sessionState, setSessionState] = useState<'idle' | 'connecting' | 'active' | 'error'>('idle');
+    const [transcripts, setTranscripts] = useState<{user?: string; model?: string}[]>([]);
+    
+    const sessionPromiseRef = useRef<any>(null);
+    const inputAudioContextRef = useRef<AudioContext | null>(null);
+    const outputAudioContextRef = useRef<AudioContext | null>(null);
+    const mediaStreamRef = useRef<MediaStream | null>(null);
+    const scriptProcessorRef = useRef<ScriptProcessorNode | null>(null);
+    
+    let nextStartTime = 0;
+    const sources = new Set<AudioBufferSourceNode>();
+    let currentInputTranscription = '';
+    let currentOutputTranscription = '';
+
+    const startSession = async () => {
+        setSessionState('connecting');
+        setTranscripts([]);
+
+        inputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        outputAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+
+        try {
+            mediaStreamRef.current = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e) {
+            console.error("Microphone access denied:", e);
+            setSessionState('error');
+            return;
+        }
+
+        sessionPromiseRef.current = ai.live.connect({
+            model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+            callbacks: {
+                onopen: () => {
+                    setSessionState('active');
+                    const source = inputAudioContextRef.current!.createMediaStreamSource(mediaStreamRef.current!);
+                    const scriptProcessor = inputAudioContextRef.current!.createScriptProcessor(4096, 1, 1);
+                    scriptProcessor.onaudioprocess = (audioProcessingEvent) => {
+                        const inputData = audioProcessingEvent.inputBuffer.getChannelData(0);
+                        const pcmBlob: GenAIBlob = {
+                            data: encode(new Uint8Array(new Int16Array(inputData.map(f => f * 32768)).buffer)),
+                            mimeType: 'audio/pcm;rate=16000',
+                        };
+                        sessionPromiseRef.current.then((session: any) => {
+                            session.sendRealtimeInput({ media: pcmBlob });
+                        });
+                    };
+                    source.connect(scriptProcessor);
+                    scriptProcessor.connect(inputAudioContextRef.current!.destination);
+                    scriptProcessorRef.current = scriptProcessor;
+                },
+                onmessage: async (message: LiveServerMessage) => {
+                    if (message.serverContent?.outputTranscription) {
+                        currentOutputTranscription += message.serverContent.outputTranscription.text;
+                    } else if (message.serverContent?.inputTranscription) {
+                        currentInputTranscription += message.serverContent.inputTranscription.text;
+                    }
+
+                    if (message.serverContent?.turnComplete) {
+                        setTranscripts(prev => [...prev, { user: currentInputTranscription, model: currentOutputTranscription }]);
+                        currentInputTranscription = '';
+                        currentOutputTranscription = '';
+                    }
+
+                    const base64Audio = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+                    if (base64Audio && outputAudioContextRef.current) {
+                        nextStartTime = Math.max(nextStartTime, outputAudioContextRef.current.currentTime);
+                        const audioBuffer = await decodeAudioData(decode(base64Audio), outputAudioContextRef.current, 24000, 1);
+                        const source = outputAudioContextRef.current.createBufferSource();
+                        source.buffer = audioBuffer;
+                        source.connect(outputAudioContextRef.current.destination);
+                        source.addEventListener('ended', () => sources.delete(source));
+                        source.start(nextStartTime);
+                        nextStartTime += audioBuffer.duration;
+                        sources.add(source);
+                    }
+                },
+                onerror: (e: ErrorEvent) => {
+                    console.error('Session error:', e);
+                    setSessionState('error');
+                    closeSession();
+                },
+                onclose: (e: CloseEvent) => {
+                   closeSession();
+                },
+            },
+            config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
+                outputAudioTranscription: {},
+                inputAudioTranscription: {},
+            },
+        });
+    };
+
+    const closeSession = () => {
+        sessionPromiseRef.current?.then((s:any) => s.close());
+        mediaStreamRef.current?.getTracks().forEach(track => track.stop());
+        scriptProcessorRef.current?.disconnect();
+        inputAudioContextRef.current?.close();
+        outputAudioContextRef.current?.close();
+        setSessionState('idle');
+    };
+    
+    useEffect(() => {
+        return () => {
+           if(sessionState !== 'idle') closeSession();
+        }
+    }, [sessionState]);
+
+    return (
+        <div className="h-full flex flex-col items-center justify-center bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))] p-8">
+            <div className={`w-48 h-48 rounded-full flex items-center justify-center transition-all duration-500 border-8 ${
+                sessionState === 'active' ? 'border-red-500/30' : 
+                sessionState === 'connecting' ? 'border-yellow-500/30' : 'border-[rgb(var(--color-border))]'
+            }`}>
+                 <div className={`w-40 h-40 rounded-full flex items-center justify-center transition-all ${
+                     sessionState === 'active' ? 'bg-red-500/20 animate-pulse' : 'bg-[rgb(var(--color-panel-light))]'
+                 }`}>
+                    <Mic size={64} className={sessionState === 'active' ? 'text-red-400' : 'text-[rgb(var(--color-text-tertiary))]'} />
+                </div>
+            </div>
+
+            <button 
+                onClick={sessionState === 'idle' || sessionState === 'error' ? startSession : closeSession}
+                className={`mt-10 px-10 py-4 rounded-full font-black text-lg transition-all ${
+                    sessionState === 'active' ? 'bg-red-600 hover:bg-red-700' : 'bg-white hover:bg-gray-200 text-black'
+                }`}
+            >
+                {sessionState === 'idle' && 'Start Session'}
+                {sessionState === 'connecting' && 'Connecting...'}
+                {sessionState === 'active' && 'End Session'}
+                {sessionState === 'error' && 'Retry Session'}
+            </button>
+            <div className="w-full max-w-2xl mt-8 space-y-4 h-64 overflow-y-auto p-4 bg-[rgb(var(--color-panel))] rounded-lg border border-[rgb(var(--color-border))]">
+                {transcripts.length === 0 && <p className="text-sm text-center h-full grid place-content-center text-[rgb(var(--color-text-tertiary))]">Conversation transcript will appear here.</p>}
+                {transcripts.map((t, i) => (
+                    <div key={i} className="text-sm">
+                        {t.user && <p className="text-blue-300"><b>You:</b> {t.user}</p>}
+                        {t.model && <p className="text-[rgb(var(--color-text-primary))]"><b>Gemini:</b> {t.model}</p>}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const SidebarButton = ({ icon, active, onClick, label, isExpanded }: any) => (
   <button
     onClick={onClick}
-    className={`flex items-center rounded-xl transition-all duration-300 group relative w-full ${isExpanded ? 'px-4 py-3 gap-3' : 'p-3 justify-center'} ${active ? 'bg-indigo-600/15 text-indigo-400 shadow-sm ring-1 ring-indigo-500/20' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'}`}
+    className={`flex items-center rounded-lg transition-all duration-200 group relative w-full ${isExpanded ? 'px-3 py-2.5 gap-3' : 'p-3 justify-center'} ${active ? 'bg-blue-500/10 text-blue-400' : 'text-[rgb(var(--color-text-secondary))] hover:bg-[rgb(var(--color-panel-light))] hover:text-[rgb(var(--color-text-primary))]'}`}
   >
-    <div className={`transition-all duration-300 group-hover:scale-110 shrink-0 ${active ? (color || 'text-indigo-400') : ''}`}>{icon}</div>
-    {isExpanded && <span className={`text-sm font-semibold whitespace-nowrap overflow-hidden transition-all duration-300 ${active ? 'text-indigo-100' : 'text-slate-400'}`}>{label}</span>}
-    {active && <div className={`absolute left-0 top-1/2 -translate-y-1/2 w-1.5 h-6 rounded-r-full ${bg || 'bg-indigo-500'}`} />}
+    <div className="shrink-0">{icon}</div>
+    {isExpanded && <span className="text-sm font-semibold">{label}</span>}
+    {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-5 rounded-r-full bg-blue-500" />}
   </button>
 );
 
@@ -616,7 +1202,7 @@ const SidebarTooltip = ({ label, children, disabled }: { label: string, children
     <div className="group relative flex items-center w-full">
         {children}
         {!disabled && (
-          <div className="absolute left-full ml-4 px-3 py-1.5 bg-slate-800 text-white text-[10px] font-bold uppercase tracking-wider rounded-md opacity-0 group-hover:opacity-100 transition-all pointer-events-none z-[100] border border-slate-700 shadow-2xl">{label}</div>
+          <div className="absolute left-full ml-4 px-2 py-1 bg-black text-white text-xs font-bold rounded-md opacity-0 group-hover:opacity-100 whitespace-nowrap z-[100] transition-opacity">{label}</div>
         )}
     </div>
 );
@@ -632,65 +1218,90 @@ const App = () => {
     setActiveTab('video');
   };
 
+  const SectionLabel = ({isExpanded, label}: {isExpanded: boolean, label: string}) => {
+    if (!isExpanded) return null;
+    return <h3 className="px-3 pt-4 pb-1 text-xs font-bold tracking-wider text-[rgb(var(--color-text-tertiary))] uppercase">{label}</h3>
+  };
+
   return (
-    <div className="flex h-screen bg-slate-950 text-slate-100 overflow-hidden font-sans selection:bg-indigo-500/30">
-      <div className={`flex flex-col bg-slate-900 border-r border-slate-800/50 transition-all duration-300 ease-in-out z-50 shadow-2xl relative ${isSidebarExpanded ? 'w-64' : 'w-20'}`}>
-        <div className="flex items-center py-8 px-4 justify-center">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-violet-600 rounded-2xl flex items-center justify-center shadow-lg transform hover:rotate-6 transition-transform">
+    <div className="flex h-screen bg-[rgb(var(--color-background))] text-[rgb(var(--color-text-primary))] font-sans">
+      <div className={`flex flex-col bg-[rgb(var(--color-panel))] border-r border-[rgb(var(--color-border))] transition-all duration-300 ${isSidebarExpanded ? 'w-60' : 'w-[68px]'}`}>
+        <div className="flex items-center py-6 px-4 shrink-0">
+            <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
                 <Sparkles className="text-white" size={20} />
             </div>
-            {isSidebarExpanded && <span className="ml-3 font-black text-xl tracking-tighter text-white">XMOD</span>}
+            {isSidebarExpanded && <span className="ml-3 font-bold text-lg">XMOD</span>}
         </div>
 
-        <div className="flex-1 px-3 space-y-2 overflow-y-auto custom-scrollbar pt-2">
-          <SidebarTooltip label="Unrestricted Omni Chat" disabled={isSidebarExpanded}>
+        <div className="flex-1 px-3 space-y-1 overflow-y-auto">
+          <SectionLabel isExpanded={isSidebarExpanded} label="Workspace" />
+          <SidebarTooltip label="Omni Chat" disabled={isSidebarExpanded}>
              <SidebarButton label="Omni Chat" icon={<MessageSquare size={20} />} active={activeTab === 'chat'} onClick={() => setActiveTab('chat')} isExpanded={isSidebarExpanded} />
           </SidebarTooltip>
-          <div className="h-px bg-slate-800/50 mx-2 my-4" />
-          <SidebarTooltip label="Creative Images" disabled={isSidebarExpanded}>
-              <SidebarButton label="Flash Image" icon={<ImageIcon size={20} />} active={activeTab === 'image'} onClick={() => setActiveTab('image')} isExpanded={isSidebarExpanded} />
+          <SidebarTooltip label="Pro Chat" disabled={isSidebarExpanded}>
+             <SidebarButton label="Pro Chat" icon={<BrainCircuit size={20} />} active={activeTab === 'pro_chat'} onClick={() => setActiveTab('pro_chat')} isExpanded={isSidebarExpanded} />
           </SidebarTooltip>
-          <SidebarTooltip label="Pony V6 (Anime)" disabled={isSidebarExpanded}>
-              <SidebarButton label="Pony Anime" icon={<Palette size={20} />} active={activeTab === 'pony'} onClick={() => setActiveTab('pony')} color="text-pink-400" bg="bg-pink-500" isExpanded={isSidebarExpanded} />
+          
+          {!isSidebarExpanded && <div className="h-px bg-[rgb(var(--color-border))] mx-2 my-2" />}
+          <SectionLabel isExpanded={isSidebarExpanded} label="Studio" />
+
+          <SidebarTooltip label="Image Generation" disabled={isSidebarExpanded}>
+              <SidebarButton label="Image Gen" icon={<ImageIcon size={20} />} active={activeTab === 'image'} onClick={() => setActiveTab('image')} isExpanded={isSidebarExpanded} />
           </SidebarTooltip>
-          <div className="h-px bg-slate-800/50 mx-2 my-4" />
-          <SidebarTooltip label="Extended Video (Veo)" disabled={isSidebarExpanded}>
-              <SidebarButton label="Veo Video" icon={<VideoIcon size={20} />} active={activeTab === 'video'} onClick={() => setActiveTab('video')} isExpanded={isSidebarExpanded} />
+          <SidebarTooltip label="Image Editor" disabled={isSidebarExpanded}>
+              <SidebarButton label="Image Edit" icon={<Aperture size={20} />} active={activeTab === 'image_edit'} onClick={() => setActiveTab('image_edit')} isExpanded={isSidebarExpanded} />
           </SidebarTooltip>
-          <SidebarTooltip label="Wan 2.5 Motion" disabled={isSidebarExpanded}>
-              <SidebarButton label="Wan 2.5" icon={<Film size={20} />} active={activeTab === 'wan'} onClick={() => setActiveTab('wan')} color="text-cyan-400" bg="bg-cyan-500" isExpanded={isSidebarExpanded} />
+          <SidebarTooltip label="Pony (Anime)" disabled={isSidebarExpanded}>
+              <SidebarButton label="Pony" icon={<Palette size={20} />} active={activeTab === 'pony'} onClick={() => setActiveTab('pony')} isExpanded={isSidebarExpanded} />
           </SidebarTooltip>
+          <SidebarTooltip label="Video Generation" disabled={isSidebarExpanded}>
+              <SidebarButton label="Video Gen" icon={<VideoIcon size={20} />} active={activeTab === 'video'} onClick={() => setActiveTab('video')} isExpanded={isSidebarExpanded} />
+          </SidebarTooltip>
+           <SidebarTooltip label="Video Analysis" disabled={isSidebarExpanded}>
+              <SidebarButton label="Video Analysis" icon={<Clapperboard size={20} />} active={activeTab === 'video_analysis'} onClick={() => setActiveTab('video_analysis')} isExpanded={isSidebarExpanded} />
+          </SidebarTooltip>
+          
+          {!isSidebarExpanded && <div className="h-px bg-[rgb(var(--color-border))] mx-2 my-2" />}
+          <SectionLabel isExpanded={isSidebarExpanded} label="Audio" />
+
+          <SidebarTooltip label="Speech Synthesis" disabled={isSidebarExpanded}>
+             <SidebarButton label="Speech" icon={<Voicemail size={20} />} active={activeTab === 'tts'} onClick={() => setActiveTab('tts')} isExpanded={isSidebarExpanded} />
+          </SidebarTooltip>
+          <SidebarTooltip label="Transcription" disabled={isSidebarExpanded}>
+             <SidebarButton label="Transcribe" icon={<Speech size={20} />} active={activeTab === 'transcribe'} onClick={() => setActiveTab('transcribe')} isExpanded={isSidebarExpanded} />
+          </SidebarTooltip>
+          <SidebarTooltip label="Live Conversation" disabled={isSidebarExpanded}>
+                <SidebarButton label="Live Voice" icon={<Mic size={20} />} active={activeTab === 'voice'} onClick={() => setActiveTab('voice')} isExpanded={isSidebarExpanded} />
+            </SidebarTooltip>
         </div>
 
-        <div className="p-3 space-y-2 border-t border-slate-800/50 bg-slate-900/50">
-            <SidebarTooltip label="Gemini Live" disabled={isSidebarExpanded}>
-                <SidebarButton label="Live Voice" icon={<Mic size={20} />} active={activeTab === 'voice'} onClick={() => setActiveTab('voice')} color="text-red-400" bg="bg-red-500" isExpanded={isSidebarExpanded} />
+        <div className="p-3 space-y-1.5 border-t border-[rgb(var(--color-border))] shrink-0">
+            <SidebarTooltip label="API Key Settings" disabled={isSidebarExpanded}>
+                <SidebarButton label="API Key" icon={<Key size={20} />} onClick={() => (window as any).aistudio?.openSelectKey?.()} isExpanded={isSidebarExpanded} />
             </SidebarTooltip>
-            <SidebarTooltip label="Configure Keys" disabled={isSidebarExpanded}>
-                <SidebarButton label="API Settings" icon={<Key size={20} />} onClick={() => (window as any).aistudio?.openSelectKey?.()} isExpanded={isSidebarExpanded} />
+            <SidebarTooltip label={isSidebarExpanded ? "Collapse" : "Expand"} disabled={isSidebarExpanded}>
+                <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className={`flex items-center w-full rounded-lg hover:bg-[rgb(var(--color-panel-light))] text-[rgb(var(--color-text-secondary))] ${isSidebarExpanded ? 'p-3' : 'p-3 justify-center'}`}>
+                  {isSidebarExpanded ? <PanelLeftClose size={20} /> : <PanelLeftOpen size={20} />}
+                </button>
             </SidebarTooltip>
-            <button onClick={() => setIsSidebarExpanded(!isSidebarExpanded)} className="flex items-center w-full p-3 rounded-xl hover:bg-slate-800 transition-colors justify-center">
-              {isSidebarExpanded ? <PanelLeftClose size={20} className="text-slate-500" /> : <PanelLeftOpen size={20} className="text-slate-500" />}
-            </button>
         </div>
       </div>
 
       <div className="flex-1 min-w-0 relative flex flex-col">
-        <header className="h-16 border-b border-slate-800/50 flex items-center px-8 bg-slate-900/30 backdrop-blur-md z-10 shrink-0">
-          <div className="flex items-center gap-4">
-            <h1 className="text-xs font-bold uppercase tracking-[0.3em] text-slate-400">{activeTab.replace('_', ' ')}</h1>
-            <div className="h-1 w-1 rounded-full bg-slate-700" />
-            <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest animate-pulse">Neural Environment</span>
-          </div>
+        <header className="h-16 border-b border-[rgb(var(--color-border))] flex items-center px-6 bg-[rgb(var(--color-panel))] z-10 shrink-0">
+            <h1 className="text-sm font-bold tracking-wide text-[rgb(var(--color-text-primary))]">{activeTab.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h1>
         </header>
-
         <main className="flex-1 min-h-0 relative">
           {activeTab === 'chat' && <ChatWorkspace ai={ai} />}
+          {activeTab === 'pro_chat' && <ChatWorkspace ai={ai} isProMode={true} />}
           {activeTab === 'image' && <ImageWorkspace onCreateVideo={handleCreateVideo} />}
+          {activeTab === 'image_edit' && <ImageEditWorkspace ai={ai} />}
           {activeTab === 'pony' && <ImageWorkspace onCreateVideo={handleCreateVideo} stylePreset="pony" />}
-          {activeTab === 'video' && <UnifiedVideoWorkspace initialData={videoData} onDataConsumed={() => setVideoData(null)} mode="standard" />}
-          {activeTab === 'wan' && <UnifiedVideoWorkspace initialData={videoData} onDataConsumed={() => setVideoData(null)} mode="wan" />}
-          {activeTab === 'voice' && <LiveWorkspace />}
+          {activeTab === 'video' && <UnifiedVideoWorkspace initialData={videoData} onDataConsumed={() => setVideoData(null)} />}
+          {activeTab === 'tts' && <TTSWorkspace ai={ai} />}
+          {activeTab === 'transcribe' && <TranscribeWorkspace ai={ai} />}
+          {activeTab === 'video_analysis' && <VideoAnalysisWorkspace ai={ai} />}
+          {activeTab === 'voice' && <LiveWorkspace ai={ai} />}
         </main>
       </div>
     </div>
