@@ -1,5 +1,4 @@
 
-
 import React, { useState, useRef, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GoogleGenAI, Type, Modality, LiveServerMessage, Blob as GenAIBlob } from "@google/genai";
@@ -53,11 +52,15 @@ import {
   Check,
   User,
   Bot,
-  Dice5
+  Dice5,
+  Bell,
+  Monitor,
+  Layout,
+  Sliders
 } from 'lucide-react';
 
 // --- Types ---
-type Tab = 'chat' | 'pro_chat' | 'image' | 'image_edit' | 'pony' | 'video' | 'tts' | 'transcribe' | 'video_analysis' | 'voice';
+type Tab = 'chat' | 'pro_chat' | 'image' | 'image_edit' | 'pony' | 'video' | 'tts' | 'transcribe' | 'video_analysis' | 'voice' | 'settings';
 type VideoModel = 'veo' | 'zImage' | 'longcat' | 'flow';
 
 interface Message {
@@ -81,6 +84,22 @@ interface VideoGeneration {
   durationSeconds: number;
   isExtending?: boolean;
 }
+
+interface AppSettings {
+  defaultChatModel: 'gemini-3-flash-preview' | 'gemini-3-pro-preview';
+  defaultImageAspectRatio: string;
+  notificationsEnabled: boolean;
+  errorAlertsEnabled: boolean;
+  compactSidebar: boolean;
+}
+
+const DEFAULT_SETTINGS: AppSettings = {
+  defaultChatModel: 'gemini-3-flash-preview',
+  defaultImageAspectRatio: '1:1',
+  notificationsEnabled: true,
+  errorAlertsEnabled: true,
+  compactSidebar: false,
+};
 
 // --- Safety & Bypass Configuration ---
 const getSafetySettings = (): any[] => [
@@ -178,7 +197,7 @@ async function decodeAudioData(
 
 // --- Components ---
 
-const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?: boolean }) => {
+const ChatWorkspace = ({ ai, isProMode = false, defaultModel }: { ai: GoogleGenAI, isProMode?: boolean, defaultModel?: string }) => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -230,7 +249,7 @@ const ChatWorkspace = ({ ai, isProMode = false }: { ai: GoogleGenAI, isProMode?:
       parts.push({ text: currentInput });
       
       const config: any = isProMode ? { thinkingConfig: { thinkingBudget: 32768 } } : {};
-      const model = isProMode ? 'gemini-3-pro-preview' : 'gemini-3-flash-preview';
+      const model = isProMode ? 'gemini-3-pro-preview' : (defaultModel || 'gemini-3-flash-preview');
 
       const stream = await ai.models.generateContentStream({
         model,
@@ -347,14 +366,18 @@ const PostGenEdit = ({ onEdit }: { onEdit: (prompt: string) => void }) => {
   );
 };
 
-const ImageWorkspace = ({ onCreateVideo, stylePreset }: { onCreateVideo: (image: string, prompt: string) => void, stylePreset?: string }) => {
+const ImageWorkspace = ({ onCreateVideo, stylePreset, defaultAspectRatio }: { onCreateVideo: (image: string, prompt: string) => void, stylePreset?: string, defaultAspectRatio?: string }) => {
   const [prompt, setPrompt] = useState('');
   const [negativePrompt, setNegativePrompt] = useState('');
   const [seed, setSeed] = useState<number | string>('');
-  const [aspectRatio, setAspectRatio] = useState('1:1');
+  const [aspectRatio, setAspectRatio] = useState(defaultAspectRatio || '1:1');
   const [isGenerating, setIsGenerating] = useState(false);
   const [results, setResults] = useState<ImageGeneration[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (defaultAspectRatio) setAspectRatio(defaultAspectRatio);
+  }, [defaultAspectRatio]);
 
   const generateImage = async (overridePrompt?: string, sourceImage?: string) => {
     const activePrompt = overridePrompt || prompt;
@@ -422,7 +445,17 @@ const ImageWorkspace = ({ onCreateVideo, stylePreset }: { onCreateVideo: (image:
                 <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Negative Prompt</label>
                 <textarea value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} className="w-full h-16 bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-3 text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors" placeholder="e.g., blurry, watermark, text..."/>
             </div>
-             <div className="flex gap-4">
+             <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Aspect Ratio</label>
+                  <select value={aspectRatio} onChange={e => setAspectRatio(e.target.value)} className="w-full bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-2 text-sm focus:border-[rgb(var(--color-accent))] focus:ring-0 transition-colors">
+                    <option value="1:1">1:1 Square</option>
+                    <option value="16:9">16:9 Landscape</option>
+                    <option value="9:16">9:16 Portrait</option>
+                    <option value="4:3">4:3 Photo</option>
+                    <option value="3:4">3:4 Portrait</option>
+                  </select>
+                </div>
                 <div className="flex-1">
                     <label className="text-xs font-semibold text-[rgb(var(--color-text-secondary))] mb-1 block">Seed</label>
                     <div className="flex">
@@ -588,7 +621,6 @@ const UnifiedVideoWorkspace = ({ initialData, onDataConsumed }: { initialData?: 
               contents: `Refine this prompt for a video generator: "${prompt}"`,
               config: { systemInstruction: PROMPT_HARDENER_INSTRUCTION, safetySettings: getSafetySettings() }
           });
-          // FIX: response.text is a property, not a function.
           if (response.text) setPrompt(response.text.trim());
       } catch (e) { console.error(e); } finally { setIsRefining(false); }
   };
@@ -1226,6 +1258,122 @@ const LiveWorkspace = ({ ai }: { ai: GoogleGenAI }) => {
     );
 };
 
+const SettingsWorkspace = ({ settings, onUpdate }: { settings: AppSettings, onUpdate: (s: Partial<AppSettings>) => void }) => {
+  return (
+    <div className="h-full bg-[rgb(var(--color-background))] p-8 overflow-y-auto">
+      <div className="max-w-4xl mx-auto space-y-8">
+        <div className="flex items-center gap-4 border-b border-[rgb(var(--color-border))] pb-6">
+          <Settings2 size={32} className="text-blue-400" />
+          <div>
+            <h2 className="text-2xl font-bold">Application Settings</h2>
+            <p className="text-[rgb(var(--color-text-secondary))]">Manage your workspace preferences and defaults.</p>
+          </div>
+        </div>
+
+        <section className="space-y-6">
+          <div className="flex items-center gap-2 text-sm font-bold text-blue-400 uppercase tracking-widest">
+            <BrainCircuit size={16} />
+            Intelligence Defaults
+          </div>
+          <div className="bg-[rgb(var(--color-panel))] rounded-xl border border-[rgb(var(--color-border))] overflow-hidden">
+            <div className="p-6 flex items-center justify-between border-b border-[rgb(var(--color-border))]">
+              <div>
+                <p className="font-bold">Default Omni Chat Model</p>
+                <p className="text-sm text-[rgb(var(--color-text-secondary))]">Which model should Omni Chat use by default?</p>
+              </div>
+              <div className="flex bg-[rgb(var(--color-panel-light))] p-1 rounded-lg border border-[rgb(var(--color-border))]">
+                <button 
+                  onClick={() => onUpdate({ defaultChatModel: 'gemini-3-flash-preview' })}
+                  className={`px-4 py-1.5 rounded-md text-sm font-semibold transition-all ${settings.defaultChatModel === 'gemini-3-flash-preview' ? 'bg-blue-600 text-white shadow-lg' : 'text-[rgb(var(--color-text-secondary))] hover:text-white'}`}
+                >
+                  Flash (Fast)
+                </button>
+                <button 
+                  onClick={() => onUpdate({ defaultChatModel: 'gemini-3-pro-preview' })}
+                  className={`px-4 py-1.5 rounded-md text-sm font-semibold transition-all ${settings.defaultChatModel === 'gemini-3-pro-preview' ? 'bg-blue-600 text-white shadow-lg' : 'text-[rgb(var(--color-text-secondary))] hover:text-white'}`}
+                >
+                  Pro (Smart)
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-6">
+          <div className="flex items-center gap-2 text-sm font-bold text-blue-400 uppercase tracking-widest">
+            <ImageIcon size={16} />
+            Visual Studio
+          </div>
+          <div className="bg-[rgb(var(--color-panel))] rounded-xl border border-[rgb(var(--color-border))] overflow-hidden">
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <p className="font-bold">Preferred Aspect Ratio</p>
+                <p className="text-sm text-[rgb(var(--color-text-secondary))]">Initial selection for image generation.</p>
+              </div>
+              <select 
+                value={settings.defaultImageAspectRatio}
+                onChange={(e) => onUpdate({ defaultImageAspectRatio: e.target.value })}
+                className="bg-[rgb(var(--color-panel-light))] border border-[rgb(var(--color-border))] rounded-lg p-2 text-sm focus:border-blue-500 outline-none"
+              >
+                <option value="1:1">1:1 Square</option>
+                <option value="16:9">16:9 Landscape</option>
+                <option value="9:16">9:16 Portrait</option>
+                <option value="4:3">4:3 Photo</option>
+                <option value="3:4">3:4 Portrait</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <section className="space-y-6">
+          <div className="flex items-center gap-2 text-sm font-bold text-blue-400 uppercase tracking-widest">
+            <Monitor size={16} />
+            Interface & Notifications
+          </div>
+          <div className="bg-[rgb(var(--color-panel))] rounded-xl border border-[rgb(var(--color-border))] divide-y divide-[rgb(var(--color-border))]">
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <p className="font-bold">Generation Notifications</p>
+                <p className="text-sm text-[rgb(var(--color-text-secondary))]">Show alerts when visual assets are ready.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={settings.notificationsEnabled} onChange={e => onUpdate({ notificationsEnabled: e.target.checked })} className="sr-only peer" />
+                <div className="w-11 h-6 bg-[rgb(var(--color-panel-light))] rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <p className="font-bold">Error Alerts</p>
+                <p className="text-sm text-[rgb(var(--color-text-secondary))]">Show popups for API or safety filter errors.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={settings.errorAlertsEnabled} onChange={e => onUpdate({ errorAlertsEnabled: e.target.checked })} className="sr-only peer" />
+                <div className="w-11 h-6 bg-[rgb(var(--color-panel-light))] rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+            <div className="p-6 flex items-center justify-between">
+              <div>
+                <p className="font-bold">Compact Sidebar</p>
+                <p className="text-sm text-[rgb(var(--color-text-secondary))]">Keep the side menu collapsed by default.</p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" checked={settings.compactSidebar} onChange={e => onUpdate({ compactSidebar: e.target.checked })} className="sr-only peer" />
+                <div className="w-11 h-6 bg-[rgb(var(--color-panel-light))] rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        <div className="pt-8 flex justify-center opacity-50 text-xs gap-4">
+          <p>XMOD GenAI Studio v1.2.0</p>
+          <span>&bull;</span>
+          <p>Settings saved to local storage</p>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const SidebarButton = ({ icon, active, onClick, label, isExpanded }: any) => (
   <button
     onClick={onClick}
@@ -1250,11 +1398,30 @@ const App = () => {
   const [activeTab, setActiveTab] = useState<Tab>('chat');
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [videoData, setVideoData] = useState<{image: string, prompt: string} | null>(null);
+  const [appSettings, setAppSettings] = useState<AppSettings>(() => {
+    const saved = localStorage.getItem('xmod_settings');
+    return saved ? JSON.parse(saved) : DEFAULT_SETTINGS;
+  });
+
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+
+  useEffect(() => {
+    localStorage.setItem('xmod_settings', JSON.stringify(appSettings));
+  }, [appSettings]);
+
+  useEffect(() => {
+    if (appSettings.compactSidebar) {
+      setIsSidebarExpanded(false);
+    }
+  }, [appSettings.compactSidebar]);
 
   const handleCreateVideo = (image: string, prompt: string) => {
     setVideoData({ image, prompt });
     setActiveTab('video');
+  };
+
+  const updateSettings = (updates: Partial<AppSettings>) => {
+    setAppSettings(prev => ({ ...prev, ...updates }));
   };
 
   const SectionLabel = ({isExpanded, label}: {isExpanded: boolean, label: string}) => {
@@ -1315,6 +1482,9 @@ const App = () => {
         </div>
 
         <div className="p-3 space-y-1.5 border-t border-[rgb(var(--color-border))] shrink-0">
+             <SidebarTooltip label="Settings" disabled={isSidebarExpanded}>
+                <SidebarButton label="Settings" icon={<Settings2 size={20} />} active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} isExpanded={isSidebarExpanded} />
+            </SidebarTooltip>
              <SidebarTooltip label="GitHub Repo" disabled={isSidebarExpanded}>
                <a href="https://github.com/google/generative-ai-docs/tree/main/site/en/tutorials/web_quickstart" target="_blank" rel="noopener noreferrer" className="w-full">
                 <SidebarButton label="GitHub" icon={<Github size={20} />} isExpanded={isSidebarExpanded} />
@@ -1336,16 +1506,17 @@ const App = () => {
             <h1 className="text-sm font-bold tracking-wide text-[rgb(var(--color-text-primary))]">{activeTab.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}</h1>
         </header>
         <main className="flex-1 min-h-0 relative">
-          {activeTab === 'chat' && <ChatWorkspace ai={ai} />}
+          {activeTab === 'chat' && <ChatWorkspace ai={ai} defaultModel={appSettings.defaultChatModel} />}
           {activeTab === 'pro_chat' && <ChatWorkspace ai={ai} isProMode={true} />}
-          {activeTab === 'image' && <ImageWorkspace onCreateVideo={handleCreateVideo} />}
+          {activeTab === 'image' && <ImageWorkspace onCreateVideo={handleCreateVideo} defaultAspectRatio={appSettings.defaultImageAspectRatio} />}
           {activeTab === 'image_edit' && <ImageEditWorkspace ai={ai} />}
-          {activeTab === 'pony' && <ImageWorkspace onCreateVideo={handleCreateVideo} stylePreset="pony" />}
+          {activeTab === 'pony' && <ImageWorkspace onCreateVideo={handleCreateVideo} stylePreset="pony" defaultAspectRatio={appSettings.defaultImageAspectRatio} />}
           {activeTab === 'video' && <UnifiedVideoWorkspace initialData={videoData} onDataConsumed={() => setVideoData(null)} />}
           {activeTab === 'tts' && <TTSWorkspace ai={ai} />}
           {activeTab === 'transcribe' && <TranscribeWorkspace ai={ai} />}
           {activeTab === 'video_analysis' && <VideoAnalysisWorkspace ai={ai} />}
           {activeTab === 'voice' && <LiveWorkspace ai={ai} />}
+          {activeTab === 'settings' && <SettingsWorkspace settings={appSettings} onUpdate={updateSettings} />}
         </main>
       </div>
     </div>
